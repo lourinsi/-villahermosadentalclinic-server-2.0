@@ -105,6 +105,7 @@ const appointmentData = (appointment: any, previousState?: any) => ({
   totalPaid: appointment.totalPaid,
   status: appointment.status,
   paymentStatus: appointment.paymentStatus,
+  toothNumbers: appointment.toothNumbers,
   previousState,
   newState: appointment,
 });

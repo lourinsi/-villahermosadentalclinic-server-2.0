@@ -80,6 +80,22 @@ const resolvePublicAppointmentToken = (token: string): string | null => {
 const toAppointment = (appointment: unknown): Appointment => appointment as Appointment;
 type IdParams = { id: string };
 
+const normalizeAppointmentToothNumbers = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    return value
+      .map((toothNumber) => String(toothNumber ?? "").trim())
+      .filter(Boolean)
+      .join(", ");
+  }
+
+  return String(value ?? "")
+    .replace(/[\n;]+/g, ",")
+    .split(",")
+    .map((toothNumber) => toothNumber.trim())
+    .filter(Boolean)
+    .join(", ");
+};
+
 const getActiveDoctorStaff = async (): Promise<DoctorIdentity[]> =>
   prisma.staff.findMany({
     where: { deleted: false },
@@ -311,6 +327,7 @@ const appointmentData = (appointment: Appointment, previousState?: Appointment) 
   paymentStatus: appointment.paymentStatus,
   cancellationReason: appointment.cancellationReason,
   treatmentNotes: appointment.treatmentNotes,
+  toothNumbers: appointment.toothNumbers,
   previousState,
   newState: appointment,
 });
@@ -400,6 +417,7 @@ const buildAppointmentCreateData = (appointment: Appointment) => {
     duration: normalizeAppointmentDuration(appointment.duration),
     notes: appointment.notes || "",
     treatmentNotes: appointment.treatmentNotes || "",
+    toothNumbers: normalizeAppointmentToothNumbers(appointment.toothNumbers),
     serviceType: appointment.serviceType || null,
     status,
     cancellationReason: appointment.cancellationReason || null,
@@ -429,6 +447,7 @@ const buildAppointmentUpdateData = (updates: Partial<Appointment>) => {
     "duration",
     "notes",
     "treatmentNotes",
+    "toothNumbers",
     "serviceType",
     "status",
     "cancellationReason",
@@ -447,6 +466,9 @@ const buildAppointmentUpdateData = (updates: Partial<Appointment>) => {
   }
   if (Object.prototype.hasOwnProperty.call(data, "duration")) {
     data.duration = normalizeAppointmentDuration(data.duration);
+  }
+  if (Object.prototype.hasOwnProperty.call(data, "toothNumbers")) {
+    data.toothNumbers = normalizeAppointmentToothNumbers(data.toothNumbers);
   }
   data.updatedAt = new Date();
   return data;
@@ -649,6 +671,9 @@ export const addAppointment = async (
     }
 
     appointmentInput.duration = normalizeAppointmentDuration(appointmentInput.duration);
+    appointmentInput.toothNumbers = normalizeAppointmentToothNumbers(
+      appointmentInput.toothNumbers ?? (appointmentInput as any).tooth_numbers
+    );
     appointmentInput.patientName = getPatientDisplayName(patientRecord, appointmentInput.patientName || appointmentInput.patientId);
     const resolvedDoctor = resolveAppointmentDoctorName(appointmentInput, doctorStaff);
     appointmentInput.doctor = resolvedDoctor.doctor;
@@ -1061,6 +1086,12 @@ export const updateAppointment = async (
     const doctorStaff = await getActiveDoctorStaff();
     const { id } = req.params;
     const updates: Partial<Appointment> = req.body;
+    if (
+      !Object.prototype.hasOwnProperty.call(updates, "toothNumbers") &&
+      Object.prototype.hasOwnProperty.call(req.body, "tooth_numbers")
+    ) {
+      updates.toothNumbers = (req.body as any).tooth_numbers;
+    }
     const requestedPaymentDate = normalizePaymentDateInput((req.body as any).paymentDate);
     if ((req.body as any).paymentDate && !requestedPaymentDate) {
       return res.status(400).json({
@@ -1085,6 +1116,9 @@ export const updateAppointment = async (
         success: false,
         message: "Cash payments can only be recorded by admins or doctors",
       });
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, "toothNumbers")) {
+      updates.toothNumbers = normalizeAppointmentToothNumbers((updates as any).toothNumbers);
     }
 
     const derivedTotalPaid = getStoredAppointmentTotalPaid(oldAppointment);
@@ -1212,6 +1246,7 @@ export const updateAppointment = async (
     else if ((updates.date && updates.date !== oldAppointment.date) || (updates.time && updates.time !== oldAppointment.time)) logChangeType = "rescheduled";
     else if (updates.notes !== undefined && updates.notes !== oldAppointment.notes) logChangeType = "notes_update";
     else if ((updates as any).treatmentNotes !== undefined && (updates as any).treatmentNotes !== (oldAppointment as any).treatmentNotes) logChangeType = "notes_update";
+    else if ((updates as any).toothNumbers !== undefined && (updates as any).toothNumbers !== (oldAppointment as any).toothNumbers) logChangeType = "notes_update";
     else if (updates.paymentStatus && updates.paymentStatus !== oldPaymentStatus) logChangeType = "payment";
 
     if (paymentAmount > 0 || (updates.paymentStatus && updates.paymentStatus !== oldPaymentStatus)) {
@@ -1283,6 +1318,7 @@ export const updateAppointment = async (
       Object.prototype.hasOwnProperty.call(updates, "discount") ||
       Object.prototype.hasOwnProperty.call(updates, "notes") ||
       Object.prototype.hasOwnProperty.call(updates, "treatmentNotes") ||
+      Object.prototype.hasOwnProperty.call(updates, "toothNumbers") ||
       Object.prototype.hasOwnProperty.call(updates, "patientId") ||
       Object.prototype.hasOwnProperty.call(updates, "patientName");
 
@@ -1439,6 +1475,7 @@ export const bookPublicAppointment = async (
       customType,
       doctor,
       notes,
+      toothNumbers,
       patientId,
       serviceType,
       // Optional fields that public callers may provide when paying or confirming
@@ -1550,6 +1587,7 @@ export const bookPublicAppointment = async (
       doctorId: resolvedDoctor.doctorId,
       notes: notes || "",
       treatmentNotes: req.body.treatmentNotes || "",
+      toothNumbers: normalizeAppointmentToothNumbers(toothNumbers ?? req.body.tooth_numbers),
       serviceType: serviceType || "",
       status: requestedStatus,
       cancellationReason: null,

@@ -180,6 +180,8 @@ const main = async () => {
       doctor: text(appointment.doctor),
       duration: toNumber(appointment.duration),
       notes: text(appointment.notes),
+      treatmentNotes: text(appointment.treatmentNotes),
+      toothNumbers: text(appointment.toothNumbers ?? appointment.tooth_numbers),
       serviceType: text(appointment.serviceType),
       status: text(appointment.status) ? normalizeStatus(text(appointment.status)) : null,
       cancellationReason: text(appointment.cancellationReason),

@@ -223,6 +223,7 @@ const makeAppointment = ({
   paymentStatus,
   paymentMethod,
   notes,
+  toothNumbers = "",
   discount = 0,
   duration = 60,
 }: {
@@ -238,6 +239,7 @@ const makeAppointment = ({
   paymentStatus: string;
   paymentMethod?: string;
   notes?: string;
+  toothNumbers?: string;
   discount?: number;
   duration?: number;
 }) => {
@@ -273,6 +275,8 @@ const makeAppointment = ({
     doctorId: null as string | null,
     duration,
     notes,
+    treatmentNotes: "",
+    toothNumbers,
     serviceType,
     status,
     cancellationReason: status === "cancelled" ? notes || "Seed cancelled appointment." : null,
@@ -300,6 +304,8 @@ const appointmentSnapshot = (appointment: any): JsonRecord => ({
   doctorId: appointment.doctorId || null,
   duration: appointment.duration,
   notes: appointment.notes || "",
+  treatmentNotes: appointment.treatmentNotes || "",
+  toothNumbers: appointment.toothNumbers || "",
   serviceType: appointment.serviceType,
   status: appointment.status,
   cancellationReason: appointment.cancellationReason || null,

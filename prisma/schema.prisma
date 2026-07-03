@@ -89,6 +89,7 @@ model Appointment {
   duration           Int?
   notes              String?
   treatmentNotes     String?
+  toothNumbers       String?
   serviceType        String?
   status             String?
   cancellationReason String?

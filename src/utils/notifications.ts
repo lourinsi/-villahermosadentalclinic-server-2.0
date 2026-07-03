@@ -77,6 +77,7 @@ type AppointmentNotificationData = {
   paymentStatus?: string;
   cancellationReason?: string;
   treatmentNotes?: string;
+  toothNumbers?: string;
   previousState?: AppointmentNotificationState;
   newState?: AppointmentNotificationState;
   changedFields?: { [key: string]: any };
@@ -389,6 +390,7 @@ const buildAppointmentChangeSummary = (
     totalPaid: data.totalPaid,
     status: data.status,
     paymentStatus: data.paymentStatus,
+    toothNumbers: data.toothNumbers,
   };
   const items: ChangeSummaryItem[] = [];
   const hasPreviousState = Object.values(previousState).some(
@@ -465,6 +467,20 @@ const buildAppointmentChangeSummary = (
   }
 
   if (
+    hasPreviousState &&
+    normalizeText(previousState.toothNumbers) !== normalizeText(newState.toothNumbers) &&
+    (previousState.toothNumbers || newState.toothNumbers)
+  ) {
+    addChangeItem(
+      items,
+      "toothNumbers",
+      "Tooth No./s",
+      previousState.toothNumbers ? String(previousState.toothNumbers) : "No tooth numbers",
+      newState.toothNumbers ? String(newState.toothNumbers) : "No tooth numbers"
+    );
+  }
+
+  if (
     fallbackStatusChange?.from &&
     fallbackStatusChange?.to &&
     !items.some((item) => item.field === fallbackStatusChange.field)
@@ -531,6 +547,7 @@ const buildAppointmentSnapshotMetadata = (
     status: data.status,
     paymentStatus: data.paymentStatus,
     treatmentNotes: data.treatmentNotes,
+    toothNumbers: data.toothNumbers,
   };
 
   return {
@@ -560,6 +577,8 @@ const detailedNotificationTitle = (changes: ChangeSummaryItem[]): string => {
       return "Appointment Notes Updated";
     case "treatmentNotes":
       return "Treatment Notes Updated";
+    case "toothNumbers":
+      return "Tooth Numbers Updated";
     default:
       return "Appointment Updated";
   }
@@ -599,6 +618,8 @@ const detailNotificationMessage = (
       return `${owner} appointment notes were updated.`;
     case "treatmentNotes":
       return `${owner} appointment treatment notes were updated.`;
+    case "toothNumbers":
+      return `${owner} appointment tooth numbers were updated.`;
     default:
       return `${owner} appointment ${change.label.toLowerCase()} was updated${fromTo}.`;
   }

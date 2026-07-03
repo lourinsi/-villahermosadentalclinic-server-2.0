@@ -32,6 +32,7 @@ const appointmentNotificationData = (appointment: Appointment, previousState: Ap
   status: appointment.status,
   paymentStatus: appointment.paymentStatus,
   cancellationReason: appointment.cancellationReason,
+  toothNumbers: appointment.toothNumbers,
   previousState,
   newState: appointment,
 });

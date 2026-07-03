@@ -119,20 +119,48 @@ const readQuestionsFromDisk = (): QuestionnaireQuestion[] => {
 };
 
 let questionCache = readQuestionsFromDisk();
+let questionCacheMtimeMs = (() => {
+  try {
+    return fs.statSync(QUESTIONS_FILE).mtimeMs;
+  } catch {
+    return null;
+  }
+})();
+
+const getQuestionsFileMtimeMs = () => {
+  try {
+    return fs.statSync(QUESTIONS_FILE).mtimeMs;
+  } catch {
+    return null;
+  }
+};
+
+const refreshQuestionsFromDiskIfChanged = () => {
+  const currentMtimeMs = getQuestionsFileMtimeMs();
+  if (currentMtimeMs === questionCacheMtimeMs) return;
+
+  questionCache = readQuestionsFromDisk();
+  questionCacheMtimeMs = currentMtimeMs;
+};
 
 const persistQuestions = async () => {
   await fs.promises.mkdir(DATA_DIR, { recursive: true });
   await fs.promises.writeFile(QUESTIONS_FILE, JSON.stringify(questionCache, null, 2), "utf8");
+  questionCacheMtimeMs = getQuestionsFileMtimeMs();
 };
 
 const createQuestionId = () => `question_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 
-export const getQuestionnaireQuestions = (includeInactive = false) =>
-  questionCache
+export const getQuestionnaireQuestions = (includeInactive = false) => {
+  refreshQuestionsFromDiskIfChanged();
+  return questionCache
     .filter((question) => includeInactive || question.isActive)
     .map((question) => ({ ...question }));
+};
 
 export const createQuestionnaireQuestion = async (input: Partial<QuestionnaireQuestion>) => {
+  refreshQuestionsFromDiskIfChanged();
+
   const text = normalizeText(input.text);
   if (!text) throw new Error("Question text is required");
 
@@ -158,6 +186,8 @@ export const createQuestionnaireQuestion = async (input: Partial<QuestionnaireQu
 };
 
 export const seedBaselineQuestionnaireQuestions = async () => {
+  refreshQuestionsFromDiskIfChanged();
+
   const existingTexts = new Set(questionCache.map((question) => normalizeText(question.text).toLowerCase()));
   const missingQuestions = createBaselineQuestions().filter(
     (question) => !existingTexts.has(normalizeText(question.text).toLowerCase())
@@ -178,6 +208,8 @@ export const updateQuestionnaireQuestion = async (
   id: string,
   input: Partial<QuestionnaireQuestion>
 ) => {
+  refreshQuestionsFromDiskIfChanged();
+
   const index = questionCache.findIndex((question) => question.id === id);
   if (index < 0) throw new Error("Question not found");
 
@@ -210,6 +242,8 @@ export const updateQuestionnaireQuestion = async (
 };
 
 export const deleteQuestionnaireQuestion = async (id: string) => {
+  refreshQuestionsFromDiskIfChanged();
+
   const index = questionCache.findIndex((question) => question.id === id);
   if (index < 0) throw new Error("Question not found");
 

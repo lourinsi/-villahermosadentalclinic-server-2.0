@@ -4,6 +4,7 @@
   "description": "Backend API for Villahermosa Dental Clinic",
   "main": "dist/index.js",
   "scripts": {
+    "predev": "npm run prisma:generate",
     "dev": "ts-node src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",

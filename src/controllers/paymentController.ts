@@ -22,6 +22,7 @@ import { PatientIdentity, withResolvedPatient } from "../utils/patientIdentity";
 const toPayment = (payment: unknown): Payment => payment as Payment;
 const toAppointment = (appointment: unknown): any => appointment as any;
 type IdParams = { id: string };
+const NO_PAYMENT_METHOD_LABEL = "N/A";
 
 const getActiveDoctorStaff = async (): Promise<DoctorIdentity[]> =>
   prisma.staff.findMany({
@@ -118,6 +119,15 @@ const isStaffRole = (req: Request): boolean => {
 const isCashPaymentMethod = (method: unknown): boolean =>
   String(method || "").trim().toLowerCase() === "cash";
 
+const normalizePaymentMethodValue = (method: unknown): string => {
+  const value = String(method ?? "").trim();
+  if (!value || /^(?:n\/?a|none|null|undefined|unknown|payment|payment log)$/i.test(value)) {
+    return NO_PAYMENT_METHOD_LABEL;
+  }
+
+  return value;
+};
+
 const todayDateKey = () => new Date().toISOString().split("T")[0];
 
 const dateOnlyKey = (value: unknown): string => {
@@ -204,7 +214,7 @@ const materializePaymentFromPaymentLog = async (paymentLogId: string): Promise<P
   );
   const paymentDate = dateOnlyKey(appointmentSnapshot.paymentDate) || dateOnlyKey(paymentLog.changedAt) || todayDateKey();
   const paymentAmount = Math.abs(numericAmount(paymentLog.amount));
-  const paymentMethod = paymentLog.paymentMethod || appointmentSnapshot.paymentMethod || "unknown";
+  const paymentMethod = normalizePaymentMethodValue(paymentLog.paymentMethod || appointmentSnapshot.paymentMethod);
 
   const existingPayments = await prisma.payment.findMany({
     where: {
@@ -290,7 +300,7 @@ const materializePaymentFromAppointmentLog = async (appointmentLogId: string): P
   );
   const paymentDate = dateOnlyKey(appointmentSnapshot.paymentDate) || dateOnlyKey(appointmentLog.changedAt) || todayDateKey();
   const paymentAmount = Math.abs(numericAmount(appointmentLog.amount));
-  const paymentMethod = appointmentSnapshot.paymentMethod || "unknown";
+  const paymentMethod = normalizePaymentMethodValue(appointmentSnapshot.paymentMethod);
 
   const existingPayments = await prisma.payment.findMany({
     where: {
@@ -400,13 +410,14 @@ export const createPayment = async (req: Request, res: Response<ApiResponse<any>
     }
 
     const payAmount = Number(amount);
+    const paymentMethod = normalizePaymentMethodValue(method);
     const isPayAtClinic = method === "Pay at Clinic";
     const newPaymentData = {
       id: `pay_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
       appointmentId,
       patientId: patientId || appointment.patientId,
       amount: payAmount,
-      method: method || "unknown",
+      method: paymentMethod,
       date: date || new Date().toISOString().split("T")[0],
       transactionId:
         transactionId ||
@@ -480,7 +491,7 @@ export const createPayment = async (req: Request, res: Response<ApiResponse<any>
     const updatedAppointmentWithPaymentDate = {
       ...updatedAppointment,
       paymentDate,
-      paymentMethod: method || updatedAppointment.paymentMethod,
+      paymentMethod: paymentMethod || normalizePaymentMethodValue(updatedAppointment.paymentMethod),
     };
 
     await createAppointmentLog(
@@ -498,7 +509,7 @@ export const createPayment = async (req: Request, res: Response<ApiResponse<any>
       await createPaymentLog(
         appointmentId,
         payAmount,
-        method || "unknown",
+        paymentMethod,
         updatedAppointment.paymentStatus || "unpaid",
         changedBy,
         oldAppointment.balance || 0,
@@ -670,7 +681,7 @@ export const updatePayment = async (req: Request<IdParams>, res: Response<ApiRes
         where: { id: paymentId },
         data: {
           amount: amount !== undefined ? Number(amount) : oldPayment.amount,
-          method: method || oldPayment.method,
+          method: method !== undefined ? normalizePaymentMethodValue(method) : normalizePaymentMethodValue(oldPayment.method),
           date: date || oldPayment.date,
           transactionId: transactionId || oldPayment.transactionId,
           notes: notes !== undefined ? notes : oldPayment.notes,
@@ -816,7 +827,7 @@ export const deletePayment = async (req: Request<IdParams>, res: Response<ApiRes
       await createPaymentLog(
         payment.appointmentId,
         -payment.amount,
-        payment.method || "unknown",
+        normalizePaymentMethodValue(payment.method),
         savedAppointment.paymentStatus || "unpaid",
         changedBy,
         oldAppointment.balance || 0,

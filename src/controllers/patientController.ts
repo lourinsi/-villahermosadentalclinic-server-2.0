@@ -126,7 +126,65 @@ const getComputedPatientStatus = (hasOverdue: boolean, effectiveLastVisit?: stri
   return "active";
 };
 
+const CONSENT_ACKNOWLEDGEMENT_IDS = [
+  "treatment",
+  "medications",
+  "treatmentPlanChanges",
+  "noGuarantee",
+  "authorization",
+  "financialResponsibility",
+] as const;
+
+const hasText = (value: unknown) => String(value || "").trim().length > 0;
+
+const isConsentComplete = (questionnaireData: any) => {
+  const acknowledgements = questionnaireData?.consentAcknowledgements;
+  const allAcknowledged =
+    acknowledgements &&
+    typeof acknowledgements === "object" &&
+    CONSENT_ACKNOWLEDGEMENT_IDS.every((id) => acknowledgements[id] === true);
+
+  return (
+    questionnaireData?.consentAccepted === true &&
+    allAcknowledged &&
+    hasText(questionnaireData?.consentPatientSignatureName) &&
+    hasText(questionnaireData?.consentSignedDate) &&
+    hasText(questionnaireData?.consentPatientSignatureImage) &&
+    hasText(questionnaireData?.consentDentistSignatureName)
+  );
+};
+
+const getProfileCompletionSummary = (questionnaireData: any) => {
+  const consentComplete = isConsentComplete(questionnaireData);
+
+  return {
+    profileCompletion: consentComplete ? "complete" : "incomplete",
+    profileCompletionMissing: consentComplete ? [] : ["consent form"],
+  };
+};
+
+const withPatientProfileCompletion = async (patients: any[]) => {
+  const patientIds = patients.map((patient) => patient.id).filter(Boolean) as string[];
+  if (patientIds.length === 0) return patients;
+
+  const questionnaires = await prisma.questionnaire.findMany({
+    where: { patientId: { in: patientIds } },
+    select: { patientId: true, data: true },
+  });
+  const questionnaireMap = new Map(questionnaires.map((questionnaire) => [questionnaire.patientId, questionnaire.data]));
+
+  return patients.map((patient) => ({
+    ...patient,
+    ...getProfileCompletionSummary(questionnaireMap.get(patient.id)),
+  }));
+};
+
 const appointmentDateOnly = (value?: string | null) => String(value || "").split(" ")[0];
+
+const isPastAppointmentDate = (value?: string | null, todayStr = new Date().toISOString().split("T")[0]) => {
+  const date = appointmentDateOnly(value);
+  return Boolean(date && date < todayStr);
+};
 
 const compareAppointmentSchedule = (a: any, b: any) => {
   const aDate = appointmentDateOnly(a.date);
@@ -204,9 +262,16 @@ const withPatientAppointmentSummaries = async (patients: any[], doctor?: string)
     const appointmentDate = appointmentDateOnly(appointment.date);
     const billable = isBillableAppointment(appointment);
 
-    entry.totalBalance += getAppointmentOutstandingBalance(appointment, paymentSums);
+    const outstandingBalance = getAppointmentOutstandingBalance(appointment, paymentSums);
+    entry.totalBalance += outstandingBalance;
 
-    if (billable && String(appointment.paymentStatus || "").toLowerCase() === "overdue") {
+    if (
+      billable &&
+      (
+        String(appointment.paymentStatus || "").toLowerCase() === "overdue" ||
+        (outstandingBalance > 0 && isPastAppointmentDate(appointment.date, todayStr))
+      )
+    ) {
       entry.hasOverdue = true;
       entry.overdueAppointmentCount += 1;
     }
@@ -571,6 +636,12 @@ export const getPatients = async (
       });
     }
 
+    const completedActive = await withPatientProfileCompletion(active);
+    const incompletePatientCount = completedActive.filter(
+      (patient) => String(patient.profileCompletion || "").toLowerCase() === "incomplete"
+    ).length;
+    active = completedActive;
+
     const total = active.length;
     const totalPages = Math.max(1, Math.ceil(total / limitNum));
     const start = (pageNum - 1) * limitNum;
@@ -584,7 +655,7 @@ export const getPatients = async (
       success: true,
       message: "Patients retrieved successfully",
       data: items as unknown as Patient[],
-      meta: { total, page: pageNum, limit: limitNum, totalPages },
+      meta: { total, page: pageNum, limit: limitNum, totalPages, incompletePatientCount },
     });
   } catch (error) {
     console.error("Error fetching patients:", error);
@@ -713,7 +784,8 @@ export const getPatientById = async (
       return res.status(404).json({ success: false, message: "Patient not found" });
     }
 
-    const [patientForResponse] = await withPatientAppointmentSummaries([patient]);
+    const [summarizedPatient] = await withPatientAppointmentSummaries([patient]);
+    const [patientForResponse] = await withPatientProfileCompletion([summarizedPatient]);
 
     res.json({
       success: true,

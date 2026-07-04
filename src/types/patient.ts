@@ -28,6 +28,8 @@ export interface Patient {
   dentalCharts?: { date: string; data: string; isEmpty: boolean }[];
   balance?: number | null;
   status?: "active" | "overdue" | "inactive" | string;
+  profileCompletion?: "complete" | "incomplete" | string;
+  profileCompletionMissing?: string[];
   lastVisit?: string;
   gender?: string | null;
   civilStatus?: string | null;

@@ -79,6 +79,7 @@ const resolvePublicAppointmentToken = (token: string): string | null => {
 
 const toAppointment = (appointment: unknown): Appointment => appointment as Appointment;
 type IdParams = { id: string };
+const NO_PAYMENT_METHOD_LABEL = "N/A";
 
 const normalizeAppointmentToothNumbers = (value: unknown): string => {
   if (Array.isArray(value)) {
@@ -192,6 +193,15 @@ const isAdminRole = (req: Request): boolean => {
 
 const isCashPaymentMethod = (method: unknown): boolean =>
   String(method || "").trim().toLowerCase() === "cash";
+
+const normalizePaymentMethodValue = (method: unknown): string => {
+  const value = String(method ?? "").trim();
+  if (!value || /^(?:n\/?a|none|null|undefined|unknown|payment|payment log)$/i.test(value)) {
+    return NO_PAYMENT_METHOD_LABEL;
+  }
+
+  return value;
+};
 
 type PaymentStatusValue = NonNullable<Appointment["paymentStatus"]>;
 
@@ -354,7 +364,7 @@ const createEditablePaymentRecordForAppointment = async ({
 
   const recordDate = normalizePaymentDateInput(paymentDate) || todayDateKey();
   const paymentId = `pay_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-  const paymentMethod = method || appointment.paymentMethod || "cash";
+  const paymentMethod = normalizePaymentMethodValue(method || appointment.paymentMethod);
   const snapshot = appointmentSnapshot || appointment;
 
   const payment = await prisma.payment.create({
@@ -755,7 +765,7 @@ export const addAppointment = async (
       const createdPaymentRecord = await createEditablePaymentRecordForAppointment({
         appointment: created,
         amount: created.totalPaid,
-        method: created.paymentMethod || "cash",
+        method: normalizePaymentMethodValue(created.paymentMethod),
         paymentDate: requestedPaymentDate,
         appointmentSnapshot: createdLogSnapshot,
         notes: appointmentLogNotes,
@@ -764,7 +774,7 @@ export const addAppointment = async (
       await createPaymentLog(
         created.id!,
         created.totalPaid,
-        created.paymentMethod || "cash",
+        normalizePaymentMethodValue(created.paymentMethod),
         created.paymentStatus || "unpaid",
         changedBy,
         created.price || 0,
@@ -1253,7 +1263,7 @@ export const updateAppointment = async (
       await createPaymentLog(
         id,
         paymentAmount > 0 ? paymentAmount : 0,
-        updatedAppointment.paymentMethod || "cash",
+        normalizePaymentMethodValue(updatedAppointment.paymentMethod),
         updatedAppointment.paymentStatus || "unpaid",
         changedBy,
         oldAppointment.balance || 0,
@@ -1286,7 +1296,7 @@ export const updateAppointment = async (
       ? await createEditablePaymentRecordForAppointment({
           appointment: saved,
           amount: paymentAmount,
-          method: updatedAppointment.paymentMethod || "cash",
+          method: normalizePaymentMethodValue(updatedAppointment.paymentMethod),
           paymentDate: requestedPaymentDate,
           appointmentSnapshot: buildPaymentDatedAppointmentSnapshot(savedForNotifications as any, requestedPaymentDate, paymentAmount),
           notes: updates.notes || "",
@@ -1641,7 +1651,7 @@ export const bookPublicAppointment = async (
       const createdPaymentRecord = await createEditablePaymentRecordForAppointment({
         appointment: created,
         amount: created.totalPaid,
-        method: created.paymentMethod || "cash",
+        method: normalizePaymentMethodValue(created.paymentMethod),
         paymentDate: requestedPaymentDate,
         appointmentSnapshot: createdLogSnapshot,
         notes: appointmentLogNotes,
@@ -1650,7 +1660,7 @@ export const bookPublicAppointment = async (
       await createPaymentLog(
         created.id!,
         created.totalPaid,
-        created.paymentMethod || "cash",
+        normalizePaymentMethodValue(created.paymentMethod),
         created.paymentStatus || "unpaid",
         "patient",
         created.price || 0,

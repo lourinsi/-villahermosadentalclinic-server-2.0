@@ -250,6 +250,28 @@ const isSamePaymentEvent = (
   return Math.abs(aTime - bTime) <= 10000;
 };
 
+const isSamePaymentLogSource = (
+  logTransaction: { id?: string; appointmentId?: string; logDate?: string; date?: string },
+  representedPayment: { appointmentId?: string; transactionId?: string | null; logDate?: string; date?: string }
+) => {
+  if (!logTransaction.appointmentId || !representedPayment.appointmentId) return false;
+  if (logTransaction.appointmentId !== representedPayment.appointmentId) return false;
+
+  if (
+    logTransaction.id &&
+    representedPayment.transactionId &&
+    logTransaction.id === representedPayment.transactionId
+  ) {
+    return true;
+  }
+
+  const logTime = getTransactionTime(logTransaction);
+  const paymentTime = getTransactionTime(representedPayment);
+  if (!logTime || !paymentTime) return false;
+
+  return Math.abs(logTime - paymentTime) <= 10000;
+};
+
 const toIsoDate = (value: unknown) => {
   const date = normalizeDate(value);
   return date ? date.toISOString() : undefined;
@@ -1643,6 +1665,8 @@ export const getRecentTransactions = async (
         patientId: payment.patientId,
         appointmentId: payment.appointmentId,
         transactionId: payment.transactionId,
+        paymentId: payment.id,
+        paymentRecordId: payment.id,
         notes: payment.notes,
         appointmentSnapshot,
         logDate: payment.createdAt ? toIsoDate(payment.createdAt) : paymentDate,
@@ -1723,7 +1747,11 @@ export const getRecentTransactions = async (
         };
       })
       .filter((transaction) =>
-        !representedPaymentTransactions.some((represented) => isSamePaymentEvent(transaction, represented))
+        !representedPaymentTransactions.some(
+          (represented) =>
+            isSamePaymentLogSource(transaction, represented) ||
+            isSamePaymentEvent(transaction, represented)
+        )
       );
 
     const expenseTransactions = detailedExpenses

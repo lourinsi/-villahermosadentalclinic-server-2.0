@@ -1,0 +1,103 @@
+[
+  {
+    "id": 0,
+    "value": "Routine Cleaning",
+    "label": "Routine Cleaning",
+    "icon": "✨",
+    "price": 1500,
+    "duration": 30,
+    "isActive": true
+  },
+  {
+    "id": 1,
+    "value": "Checkup",
+    "label": "Checkup",
+    "icon": "🔍",
+    "price": 500,
+    "duration": 30,
+    "isActive": true
+  },
+  {
+    "id": 2,
+    "value": "Filling",
+    "label": "Filling",
+    "icon": "🦷",
+    "price": 1200,
+    "duration": 60,
+    "isActive": true
+  },
+  {
+    "id": 3,
+    "value": "Root Canal",
+    "label": "Root Canal",
+    "icon": "🔬",
+    "price": 5000,
+    "duration": 90,
+    "isActive": true
+  },
+  {
+    "id": 4,
+    "value": "Extraction",
+    "label": "Extraction",
+    "icon": "🦷",
+    "price": 1500,
+    "duration": 60,
+    "isActive": true
+  },
+  {
+    "id": 5,
+    "value": "Whitening",
+    "label": "Whitening",
+    "icon": "💎",
+    "price": 3000,
+    "duration": 60,
+    "isActive": true
+  },
+  {
+    "id": 6,
+    "value": "Other",
+    "label": "Other",
+    "icon": "➕",
+    "price": 0,
+    "duration": 30,
+    "isActive": true
+  },
+  {
+    "id": 7,
+    "value": "Dentures",
+    "label": "Dentures",
+    "icon": "🦷",
+    "price": 10000,
+    "duration": 60,
+    "isActive": true
+  },
+  {
+    "id": 8,
+    "value": "Crowns",
+    "label": "Crowns",
+    "icon": "👑",
+    "price": 8000,
+    "duration": 90,
+    "isActive": true
+  },
+  {
+    "id": 9,
+    "value": "Braces",
+    "label": "Braces",
+    "icon": "😁",
+    "price": 50000,
+    "duration": 90,
+    "isActive": true
+  },
+  {
+    "id": 10,
+    "value": "Dental Implant",
+    "label": "Dental Implant",
+    "icon": "💊",
+    "price": 100,
+    "duration": 30,
+    "isActive": true,
+    "createdAt": "2026-07-05T07:55:42.663Z",
+    "updatedAt": "2026-07-05T07:55:42.663Z"
+  }
+]

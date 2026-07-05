@@ -38,6 +38,9 @@ export interface DetailedExpense {
   status: string;
   recurring: boolean;
   createdAt?: string | Date;
+  updatedAt?: string | Date;
+  deleted?: boolean;
+  deletedAt?: string | Date | null;
   inventoryItemId?: string;
   inventoryQuantity?: number;
 }

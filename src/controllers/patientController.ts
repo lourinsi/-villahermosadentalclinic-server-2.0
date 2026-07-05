@@ -238,6 +238,7 @@ const withPatientAppointmentSummaries = async (patients: any[], doctor?: string)
     string,
     {
       totalBalance: number;
+      appointmentCount: number;
       hasOverdue: boolean;
       overdueAppointmentCount: number;
       lastCompletedDate?: string | null;
@@ -250,6 +251,7 @@ const withPatientAppointmentSummaries = async (patients: any[], doctor?: string)
     if (!apptMap[patientId]) {
       apptMap[patientId] = {
         totalBalance: 0,
+        appointmentCount: 0,
         hasOverdue: false,
         overdueAppointmentCount: 0,
         lastCompletedDate: null,
@@ -258,6 +260,7 @@ const withPatientAppointmentSummaries = async (patients: any[], doctor?: string)
     }
 
     const entry = apptMap[patientId];
+    entry.appointmentCount += 1;
     const aptStatus = normalizeStatus(appointment.status);
     const appointmentDate = appointmentDateOnly(appointment.date);
     const billable = isBillableAppointment(appointment);
@@ -298,13 +301,14 @@ const withPatientAppointmentSummaries = async (patients: any[], doctor?: string)
   return patients.map((patient) => {
     const agg = apptMap[patient.id] || {
       totalBalance: 0,
+      appointmentCount: 0,
       hasOverdue: false,
       overdueAppointmentCount: 0,
       lastCompletedDate: null,
       nextAppointment: null,
     };
     const effectiveLastVisit = latestDate(patient.lastVisit, agg.lastCompletedDate);
-    const computedBalance = agg.totalBalance > 0 ? agg.totalBalance : toPositiveBalance(patient.balance);
+    const computedBalance = agg.appointmentCount > 0 ? agg.totalBalance : toPositiveBalance(patient.balance);
     const newStatus = getComputedPatientStatus(agg.hasOverdue, effectiveLastVisit);
 
     return {

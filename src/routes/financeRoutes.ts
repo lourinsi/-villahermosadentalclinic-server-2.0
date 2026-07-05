@@ -10,6 +10,7 @@ import {
   getDetailedExpenses,
   createDetailedExpense,
   updateDetailedExpense,
+  deleteDetailedExpense,
   payDetailedExpense,
   getFinanceHistoryLogs,
   getRecurringExpenses,
@@ -58,6 +59,9 @@ router.patch("/detailed-expenses/:id", updateDetailedExpense);
 
 // POST - Mark a detailed expense paid
 router.post("/detailed-expenses/:id/pay", payDetailedExpense);
+
+// DELETE - Soft delete detailed expense and reverse linked stock if needed
+router.delete("/detailed-expenses/:id", deleteDetailedExpense);
 
 // GET - Get recurring expenses - MORE SPECIFIC ROUTE FIRST
 router.get("/recurring-expenses", getRecurringExpenses);

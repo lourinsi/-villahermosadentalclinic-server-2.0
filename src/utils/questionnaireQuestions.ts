@@ -14,7 +14,7 @@ const QUESTIONS_FILE = path.join(DATA_DIR, "questionnaire-questions.json");
 const BASELINE_QUESTION_TIMESTAMP = "2026-07-02T00:00:00.000Z";
 
 const BASELINE_QUESTIONNAIRE_QUESTION_TEXTS = [
-  ["baseline_physician_information", "Physician information: Name of Physician, specialty if applicable, office address, and office number."],
+  ["baseline_physician_information", "Do you have a physician?"],
   ["baseline_good_health", "Are you in good health?"],
   ["baseline_under_medical_treatment", "Are you under medical treatment now? If so, what is the condition being treated?"],
   ["baseline_serious_illness_or_operation", "Have you ever had serious illness or surgical operation? If so, what illness or operation?"],
@@ -188,12 +188,29 @@ export const createQuestionnaireQuestion = async (input: Partial<QuestionnaireQu
 export const seedBaselineQuestionnaireQuestions = async () => {
   refreshQuestionsFromDiskIfChanged();
 
+  const baselineQuestions = createBaselineQuestions();
+  const baselineById = new Map(baselineQuestions.map((question) => [question.id, question]));
+  let didUpdateBaselineQuestions = false;
+
+  questionCache = questionCache.map((question) => {
+    const baselineQuestion = baselineById.get(question.id);
+    if (!baselineQuestion || question.text === baselineQuestion.text) return question;
+
+    didUpdateBaselineQuestions = true;
+    return {
+      ...question,
+      text: baselineQuestion.text,
+      updatedAt: new Date().toISOString(),
+    };
+  });
+
+  const existingIds = new Set(questionCache.map((question) => question.id));
   const existingTexts = new Set(questionCache.map((question) => normalizeText(question.text).toLowerCase()));
-  const missingQuestions = createBaselineQuestions().filter(
-    (question) => !existingTexts.has(normalizeText(question.text).toLowerCase())
+  const missingQuestions = baselineQuestions.filter(
+    (question) => !existingIds.has(question.id) && !existingTexts.has(normalizeText(question.text).toLowerCase())
   );
 
-  if (missingQuestions.length > 0) {
+  if (didUpdateBaselineQuestions || missingQuestions.length > 0) {
     questionCache = [...missingQuestions, ...questionCache];
     await persistQuestions();
   }

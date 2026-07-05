@@ -291,6 +291,23 @@ const buildFinanceHistoryResponse = (log: any): FinanceHistoryLog => ({
   summary: log.summary || undefined,
 });
 
+const buildDetailedExpenseResponse = (expense: any): DetailedExpense => ({
+  ...toDetailedExpense(expense),
+  amount: toFiniteNumber(expense.amount),
+  vendor: expense.vendor || "",
+  paymentMethod: expense.paymentMethod || "",
+  status: normalizeExpenseStatus(expense.status),
+  paymentDate: expense.paymentDate || undefined,
+  createdAt: toIsoDate(expense.createdAt),
+  updatedAt: toIsoDate(expense.updatedAt),
+  deleted: Boolean(expense.deleted),
+  deletedAt: toIsoDate(expense.deletedAt),
+  inventoryItemId: expense.inventoryItemId || "",
+  inventoryQuantity: toFiniteNumber(expense.inventoryQuantity),
+});
+
+const activeDetailedExpenseWhere = { deleted: false };
+
 export const createFinanceRecord = async (
   req: Request,
   res: Response<ApiResponse<FinanceRecord>>
@@ -490,12 +507,7 @@ export const createDetailedExpense = async (
     res.status(201).json({
       success: true,
       message: "Detailed expense added successfully",
-      data: {
-        ...newExpense,
-        status: normalizeExpenseStatus(newExpense.status),
-        paymentDate: newExpense.paymentDate || undefined,
-        createdAt: toIsoDate(newExpense.createdAt),
-      },
+      data: buildDetailedExpenseResponse(newExpense),
     });
   } catch (error) {
     console.error("[FINANCE CREATE_DETAILED_EXPENSE] ERROR:", error);
@@ -522,7 +534,7 @@ export const updateDetailedExpense = async (
       where: { id: req.params.id },
     });
 
-    if (!currentExpense) {
+    if (!currentExpense || currentExpense.deleted) {
       return res.status(404).json({
         success: false,
         message: "Detailed expense not found",
@@ -670,12 +682,7 @@ export const updateDetailedExpense = async (
     res.json({
       success: true,
       message: "Detailed expense updated successfully",
-      data: {
-        ...updatedExpense,
-        status: normalizeExpenseStatus(updatedExpense.status),
-        paymentDate: updatedExpense.paymentDate || undefined,
-        createdAt: toIsoDate(updatedExpense.createdAt),
-      },
+      data: buildDetailedExpenseResponse(updatedExpense),
     });
   } catch (error) {
     console.error("[FINANCE UPDATE_DETAILED_EXPENSE] ERROR:", error);
@@ -708,7 +715,7 @@ export const payDetailedExpense = async (
       where: { id: req.params.id },
     });
 
-    if (!currentExpense) {
+    if (!currentExpense || currentExpense.deleted) {
       return res.status(404).json({
         success: false,
         message: "Detailed expense not found",
@@ -753,18 +760,121 @@ export const payDetailedExpense = async (
     res.json({
       success: true,
       message: "Detailed expense marked as paid",
-      data: {
-        ...updatedExpense,
-        status: normalizeExpenseStatus(updatedExpense.status),
-        paymentDate: updatedExpense.paymentDate || undefined,
-        createdAt: toIsoDate(updatedExpense.createdAt),
-      },
+      data: buildDetailedExpenseResponse(updatedExpense),
     });
   } catch (error) {
     console.error("[FINANCE PAY_DETAILED_EXPENSE] ERROR:", error);
     res.status(500).json({
       success: false,
       message: "Error marking detailed expense as paid",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+};
+
+export const deleteDetailedExpense = async (
+  req: Request<IdParams>,
+  res: Response<ApiResponse<null>>
+) => {
+  try {
+    const requesterRole = normalizeCodeValue((req as any).user?.role);
+    if (requesterRole !== "admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Only admins can delete detailed expenses",
+      });
+    }
+
+    const currentExpense = await prisma.detailedExpense.findUnique({
+      where: { id: req.params.id },
+    });
+
+    if (!currentExpense || currentExpense.deleted) {
+      return res.status(404).json({
+        success: false,
+        message: "Detailed expense not found",
+      });
+    }
+
+    const actor = getFinanceHistoryActor(req);
+    const inventoryItemId = String(currentExpense.inventoryItemId || "").trim();
+    const inventoryQuantity = toFiniteNumber(currentExpense.inventoryQuantity);
+
+    await prisma.$transaction(async (tx) => {
+      if (inventoryItemId && inventoryQuantity > 0) {
+        const inventoryItem = await tx.inventoryItem.findUnique({
+          where: { id: inventoryItemId },
+        });
+
+        if (!inventoryItem || inventoryItem.deleted) {
+          throw new Error("Linked inventory item not found");
+        }
+
+        const currentQuantity = toFiniteNumber(inventoryItem.quantity);
+        const updatedQuantity = currentQuantity - inventoryQuantity;
+        if (updatedQuantity < 0) {
+          throw new Error("Linked inventory adjustment would make stock negative");
+        }
+
+        const costPerUnit = toFiniteNumber(inventoryItem.costPerUnit);
+        const updatedInventoryItem = await tx.inventoryItem.update({
+          where: { id: inventoryItemId },
+          data: {
+            quantity: updatedQuantity,
+            totalValue: updatedQuantity * costPerUnit,
+            updatedAt: new Date(),
+          },
+        });
+
+        await createFinanceHistoryLog(tx, {
+          entityType: "inventory",
+          entityId: inventoryItemId,
+          action: "stock_reversed_from_expense_delete",
+          previousState: inventoryItem,
+          newState: updatedInventoryItem,
+          quantityChange: -inventoryQuantity,
+          summary: `Stock reversed from deleted expense ${req.params.id}`,
+          ...actor,
+        });
+      }
+
+      const deletedExpense = await tx.detailedExpense.update({
+        where: { id: req.params.id },
+        data: {
+          deleted: true,
+          deletedAt: new Date(),
+        },
+      });
+
+      await createFinanceHistoryLog(tx, {
+        entityType: "expense",
+        entityId: req.params.id,
+        action: "delete",
+        previousState: currentExpense,
+        newState: deletedExpense,
+        amount: toFiniteNumber(deletedExpense.amount),
+        ...actor,
+      });
+    });
+
+    res.json({ success: true, message: "Detailed expense deleted successfully" });
+  } catch (error) {
+    console.error("[FINANCE DELETE_DETAILED_EXPENSE] ERROR:", error);
+    if (error instanceof Error && error.message === "Linked inventory item not found") {
+      return res.status(400).json({
+        success: false,
+        message: "Linked inventory item not found",
+      });
+    }
+    if (error instanceof Error && error.message === "Linked inventory adjustment would make stock negative") {
+      return res.status(400).json({
+        success: false,
+        message: "Linked inventory adjustment would make stock negative",
+      });
+    }
+    res.status(500).json({
+      success: false,
+      message: "Error deleting detailed expense",
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }
@@ -900,7 +1010,7 @@ export const getRevenue = async (req: Request, res: Response<ApiResponse<Revenue
   try {
     const [financeRecords, detailedExpenses, activeStaff] = await Promise.all([
       prisma.financeRecord.findMany({ where: { deleted: false } }),
-      prisma.detailedExpense.findMany(),
+      prisma.detailedExpense.findMany({ where: activeDetailedExpenseWhere }),
       prisma.staff.findMany({ where: { deleted: false } }),
     ]);
 
@@ -983,7 +1093,7 @@ export const getExpenseBreakdown = async (
 ) => {
   try {
     const [detailedExpenses, activeStaff] = await Promise.all([
-      prisma.detailedExpense.findMany(),
+      prisma.detailedExpense.findMany({ where: activeDetailedExpenseWhere }),
       prisma.staff.findMany({ where: { deleted: false } }),
     ]);
 
@@ -1026,23 +1136,10 @@ export const getDetailedExpenses = async (
 ) => {
   try {
     const detailedExpenses = await prisma.detailedExpense.findMany({
+      where: activeDetailedExpenseWhere,
       orderBy: { date: "desc" },
     });
-    const data = detailedExpenses.map((expense) => ({
-      id: expense.id,
-      date: expense.date,
-      category: expense.category,
-      description: expense.description,
-      amount: toFiniteNumber(expense.amount),
-      vendor: expense.vendor || "",
-      paymentMethod: expense.paymentMethod || "",
-      paymentDate: expense.paymentDate || undefined,
-      status: normalizeExpenseStatus(expense.status),
-      recurring: Boolean(expense.recurring),
-      createdAt: toIsoDate(expense.createdAt),
-      inventoryItemId: expense.inventoryItemId || "",
-      inventoryQuantity: toFiniteNumber(expense.inventoryQuantity),
-    }));
+    const data = detailedExpenses.map(buildDetailedExpenseResponse);
     res.json({
       success: true,
       message: "Detailed expenses retrieved successfully",
@@ -1064,7 +1161,7 @@ export const getRecurringExpenses = async (
 ) => {
   try {
     const recurringExpenses = await prisma.detailedExpense.findMany({
-      where: { recurring: true },
+      where: { ...activeDetailedExpenseWhere, recurring: true },
       orderBy: { date: "asc" },
     });
 
@@ -1595,10 +1692,23 @@ export const getRecentTransactions = async (
   try {
     const requestedLimit = Number((req.query as Record<string, string | undefined>).limit || 25);
     const resultLimit = Math.max(1, Math.min(1000, Number.isFinite(requestedLimit) ? requestedLimit : 25));
+    const sourceLimit = Math.min(5000, Math.max(100, resultLimit * 6));
     const [financeRecords, detailedExpenses, payments, appointmentPaymentLogs] = await Promise.all([
-      prisma.financeRecord.findMany({ where: { deleted: false }, orderBy: { date: "desc" } }),
-      prisma.detailedExpense.findMany({ orderBy: { date: "desc" } }),
-      prisma.payment.findMany({ where: { deleted: false }, orderBy: { date: "desc" } }),
+      prisma.financeRecord.findMany({
+        where: { deleted: false },
+        orderBy: { date: "desc" },
+        take: sourceLimit,
+      }),
+      prisma.detailedExpense.findMany({
+        where: activeDetailedExpenseWhere,
+        orderBy: { date: "desc" },
+        take: sourceLimit,
+      }),
+      prisma.payment.findMany({
+        where: { deleted: false },
+        orderBy: { date: "desc" },
+        take: sourceLimit,
+      }),
       prisma.appointmentLog.findMany({
         where: {
           AND: [
@@ -1612,6 +1722,7 @@ export const getRecentTransactions = async (
           ],
         },
         orderBy: { changedAt: "desc" },
+        take: sourceLimit,
       }),
     ]);
 

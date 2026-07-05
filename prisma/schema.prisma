@@ -293,14 +293,20 @@ model DetailedExpense {
   status        String?
   recurring     Boolean @default(false)
   createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deleted       Boolean @default(false)
+  deletedAt     DateTime?
   inventoryItemId   String?
   inventoryQuantity Float?
 
   @@index([category])
+  @@index([category, date])
   @@index([date])
   @@index([paymentDate])
+  @@index([status, paymentDate])
   @@index([createdAt])
   @@index([inventoryItemId])
+  @@index([deleted])
   @@map("detailed_expenses")
 }
 

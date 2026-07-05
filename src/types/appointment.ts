@@ -9,7 +9,7 @@ export interface Appointment {
   price?: number;
   discount?: number; // numeric amount discounted from price
   doctor: string;
-  doctorId?: string;
+  doctorId?: string | null;
   doctorName?: string;
   doctorProfile?: string | null;
   doctorProfilePicture?: string | null;

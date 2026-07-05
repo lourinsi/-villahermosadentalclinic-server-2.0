@@ -80,6 +80,11 @@ const resolvePublicAppointmentToken = (token: string): string | null => {
 const toAppointment = (appointment: unknown): Appointment => appointment as Appointment;
 type IdParams = { id: string };
 const NO_PAYMENT_METHOD_LABEL = "N/A";
+const UNASSIGNED_DOCTOR_NAME = "N/A";
+const isUnassignedAppointmentDoctor = (value: unknown): boolean =>
+  /^(?:__assign_later__|n\/a|na|none|null|undefined|unassigned|no doctor assigned|to assign later|assign later)$/i.test(
+    String(value ?? "").trim()
+  );
 
 const normalizeAppointmentToothNumbers = (value: unknown): string => {
   if (Array.isArray(value)) {
@@ -152,7 +157,14 @@ const getActivePatientIdentity = async (patientId?: string | null): Promise<Pati
 const resolveAppointmentDoctorName = (
   appointment: Partial<Appointment>,
   doctorStaff: DoctorIdentity[]
-): { doctor: string; doctorId?: string } => {
+): { doctor: string; doctorId?: string | null } => {
+  if (
+    isUnassignedAppointmentDoctor(appointment.doctor) ||
+    isUnassignedAppointmentDoctor((appointment as any).doctorName)
+  ) {
+    return { doctor: UNASSIGNED_DOCTOR_NAME, doctorId: null };
+  }
+
   const doctorValue = (appointment as any).doctorId || (appointment as any).doctorName || appointment.doctor;
   const doctor = findDoctorForValue(doctorStaff, doctorValue);
   return {

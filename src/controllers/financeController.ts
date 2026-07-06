@@ -12,6 +12,7 @@ import {
 } from "../types/finance";
 import { prisma } from "../lib/prisma";
 import { getAppointmentTypeName } from "../utils/appointment-types";
+import { DoctorIdentity, withResolvedDoctor } from "../utils/doctorIdentity";
 import {
   createFinanceHistoryLog,
   findFinanceHistoryLogs,
@@ -24,6 +25,20 @@ const toDetailedExpense = (expense: unknown): DetailedExpense => expense as Deta
 const toFinanceHistoryLog = (log: unknown): FinanceHistoryLog => log as FinanceHistoryLog;
 type IdParams = { id: string };
 const EXPENSE_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899"];
+const UNASSIGNED_DOCTOR_NAME = "N/A";
+
+const getActiveDoctorStaff = async (): Promise<DoctorIdentity[]> =>
+  prisma.staff.findMany({
+    where: { deleted: false },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      profilePicture: true,
+      role: true,
+      specialization: true,
+    },
+  }) as Promise<DoctorIdentity[]>;
 
 const toFiniteNumber = (value: unknown) => {
   const number = Number(value);
@@ -204,6 +219,52 @@ const getAppointmentServiceName = (appointment: any) =>
   appointment?.customType ||
   appointment?.serviceType ||
   getAppointmentTypeName(Number(appointment?.type), appointment?.customType);
+
+const getAppointmentTypeLabel = (appointment: any) => {
+  const customType = String(appointment?.customType || "").trim();
+  const serviceType = String(appointment?.serviceType || "").trim();
+  if (customType || serviceType) return customType || serviceType;
+
+  const type = appointment?.type;
+  if (typeof type === "number" || (typeof type === "string" && /^\d+$/.test(type))) {
+    return getAppointmentTypeName(Number(type), customType);
+  }
+
+  return String(appointment?.appointmentType || appointment?.typeLabel || type || "appointment").trim();
+};
+
+const resolveAppointmentForFinance = (
+  currentAppointment: any,
+  storedSnapshot: any,
+  doctorStaff: DoctorIdentity[]
+) => {
+  const current = currentAppointment
+    ? withResolvedDoctor(currentAppointment as Record<string, any>, doctorStaff)
+    : null;
+  const stored = storedSnapshot
+    ? withResolvedDoctor(storedSnapshot as Record<string, any>, doctorStaff)
+    : null;
+  const doctorSource = current || stored || {};
+  const doctorName = String(doctorSource.doctorName || doctorSource.doctor || "").trim() || UNASSIGNED_DOCTOR_NAME;
+  const appointmentSnapshot = current || stored
+    ? {
+        ...(stored || {}),
+        ...(current || {}),
+        doctor: doctorName,
+        doctorName,
+        doctorId: doctorSource.doctorId || null,
+        doctorProfile: doctorSource.doctorProfile || doctorSource.doctorProfilePicture || undefined,
+        doctorProfilePicture: doctorSource.doctorProfilePicture || doctorSource.doctorProfile || undefined,
+      }
+    : undefined;
+
+  return {
+    appointmentSnapshot,
+    doctor: doctorName,
+    doctorName,
+    doctorId: doctorSource.doctorId || null,
+  };
+};
 
 const findAppointmentForFinanceRecord = (
   record: {
@@ -1670,7 +1731,7 @@ export const getRecentTransactions = async (
     const requestedLimit = Number((req.query as Record<string, string | undefined>).limit || 25);
     const resultLimit = Math.max(1, Math.min(1000, Number.isFinite(requestedLimit) ? requestedLimit : 25));
     const sourceLimit = Math.min(5000, Math.max(100, resultLimit * 6));
-    const [financeRecords, detailedExpenses, payments] = await Promise.all([
+    const [financeRecords, detailedExpenses, payments, doctorStaff] = await Promise.all([
       prisma.financeRecord.findMany({
         where: { deleted: false },
         orderBy: { date: "desc" },
@@ -1685,6 +1746,7 @@ export const getRecentTransactions = async (
         orderBy: { date: "desc" },
         take: sourceLimit,
       }),
+      getActiveDoctorStaff(),
     ]);
 
     const paymentIds = new Set(payments.map((payment) => payment.id));
@@ -1718,10 +1780,14 @@ export const getRecentTransactions = async (
     );
 
     const allPaymentTransactions = payments.map((payment) => {
-      // Prefer any snapshot stored on the payment record; otherwise fallback to current appointment row
       const currentAppointmentSnapshot = appointmentSnapshotById.get(payment.appointmentId);
-      const appointmentSnapshot = (payment as any).appointmentSnapshot || currentAppointmentSnapshot;
-      const serviceName = appointmentSnapshot?.customType || appointmentSnapshot?.serviceType || "appointment";
+      const resolvedAppointment = resolveAppointmentForFinance(
+        currentAppointmentSnapshot,
+        (payment as any).appointmentSnapshot,
+        doctorStaff
+      );
+      const appointmentSnapshot = resolvedAppointment.appointmentSnapshot;
+      const serviceName = appointmentSnapshot ? getAppointmentTypeLabel(appointmentSnapshot) : "appointment";
       const paymentDate = dateOnlyKey(payment.date) || dateOnlyKey(payment.createdAt);
 
       return {
@@ -1736,6 +1802,8 @@ export const getRecentTransactions = async (
         method: normalizeMethod(payment.method),
         patientId: payment.patientId,
         appointmentId: payment.appointmentId,
+        doctor: resolvedAppointment.doctor,
+        doctorName: resolvedAppointment.doctorName,
         transactionId: payment.transactionId,
         paymentId: payment.id,
         paymentRecordId: payment.id,
@@ -1773,6 +1841,14 @@ export const getRecentTransactions = async (
           extractAppointmentId(record.description) ||
           matchedAppointment?.id ||
           undefined;
+        const currentAppointmentSnapshot = appointmentId
+          ? appointmentSnapshotById.get(appointmentId) || matchedAppointment
+          : matchedAppointment;
+        const resolvedAppointment = resolveAppointmentForFinance(
+          currentAppointmentSnapshot,
+          record.appointmentSnapshot,
+          doctorStaff
+        );
 
         return {
           id: record.id,
@@ -1785,14 +1861,14 @@ export const getRecentTransactions = async (
           type: isExpenseType(record.type) ? "expense" : "income",
           method: isIncomeType(record.type) ? "Payment" : "Finance record",
           appointmentId,
-          currentAppointmentBalance: appointmentId ? appointmentSnapshotById.get(appointmentId)?.balance : undefined,
-          currentAppointmentTotalPaid: appointmentId ? appointmentSnapshotById.get(appointmentId)?.totalPaid : undefined,
-          currentAppointmentPrice: appointmentId ? appointmentSnapshotById.get(appointmentId)?.price : undefined,
-          currentAppointmentDiscount: appointmentId ? appointmentSnapshotById.get(appointmentId)?.discount : undefined,
-          currentPaymentStatus: appointmentId ? appointmentSnapshotById.get(appointmentId)?.paymentStatus : undefined,
-          appointmentSnapshot: record.appointmentSnapshot
-            ? record.appointmentSnapshot
-            : (appointmentId ? appointmentSnapshotById.get(appointmentId) || matchedAppointment : matchedAppointment || undefined),
+          doctor: resolvedAppointment.doctor,
+          doctorName: resolvedAppointment.doctorName,
+          currentAppointmentBalance: currentAppointmentSnapshot?.balance,
+          currentAppointmentTotalPaid: currentAppointmentSnapshot?.totalPaid,
+          currentAppointmentPrice: currentAppointmentSnapshot?.price,
+          currentAppointmentDiscount: currentAppointmentSnapshot?.discount,
+          currentPaymentStatus: currentAppointmentSnapshot?.paymentStatus,
+          appointmentSnapshot: resolvedAppointment.appointmentSnapshot,
           logDate: record.createdAt ? toIsoDate(record.createdAt) : paymentDate,
           source: "finance-record",
         };

@@ -157,6 +157,16 @@ const numericAmount = (value: unknown) => {
   return Number.isFinite(amount) ? amount : 0;
 };
 
+const withPaymentLifecycleSnapshot = (appointment: any, payment: Payment | any): any => ({
+  ...appointment,
+  paymentId: payment?.id,
+  paymentRecordId: payment?.id,
+  transactionId: payment?.transactionId || "",
+  paymentDate: dateOnlyKey(payment?.date) || payment?.date || "",
+  paymentMethod: normalizePaymentMethodValue(payment?.method),
+  paymentAmount: Math.abs(numericAmount(payment?.amount)),
+});
+
 const normalizePaymentMethod = (method?: string | null) =>
   String(method || "").trim().toLowerCase();
 
@@ -850,8 +860,8 @@ export const deletePayment = async (req: Request<IdParams>, res: Response<ApiRes
         (changedBy === "admin" ? "Admin" : changedBy);
       await createAppointmentLog(
         payment.appointmentId,
-        oldAppointment,
-        savedAppointment,
+        withPaymentLifecycleSnapshot(oldAppointment, payment),
+        withPaymentLifecycleSnapshot(savedAppointment, payment),
         changedBy,
         changedByName,
         "payment",
@@ -986,8 +996,8 @@ export const restorePayment = async (req: Request<IdParams>, res: Response<ApiRe
 
     await createAppointmentLog(
       payment.appointmentId,
-      oldAppointment,
-      savedAppointmentData,
+      withPaymentLifecycleSnapshot(oldAppointment, payment),
+      withPaymentLifecycleSnapshot(savedAppointmentData, restoredPayment),
       changedBy,
       changedByName,
       "payment",

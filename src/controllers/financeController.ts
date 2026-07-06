@@ -238,26 +238,62 @@ const findAppointmentForFinanceRecord = (
   return amountMatches.length === 1 ? amountMatches[0] : null;
 };
 
-const getTransactionTime = (transaction: { logDate?: string; date?: string }) =>
-  normalizeDate(transaction.logDate || transaction.date)?.getTime() || 0;
+type PaymentEventLike = {
+  appointmentId?: string;
+  amount?: number;
+  logDate?: string;
+  date?: string;
+  paymentDate?: string;
+  createdAt?: string | Date | null;
+  updatedAt?: string | Date | null;
+  deletedAt?: string | Date | null;
+};
+
+const getPaymentEventTimes = (transaction: PaymentEventLike) =>
+  [
+    transaction.logDate,
+    transaction.paymentDate,
+    transaction.date,
+    transaction.createdAt,
+    transaction.updatedAt,
+    transaction.deletedAt,
+  ]
+    .map((value) => normalizeDate(value)?.getTime() || 0)
+    .filter((time, index, times) => time > 0 && times.indexOf(time) === index);
+
+const hasClosePaymentEventTime = (a: PaymentEventLike, b: PaymentEventLike) =>
+  getPaymentEventTimes(a).some((aTime) =>
+    getPaymentEventTimes(b).some((bTime) => Math.abs(aTime - bTime) <= 10000)
+  );
+
+const getPrecisePaymentEventTimes = (transaction: PaymentEventLike) =>
+  [
+    transaction.logDate,
+    transaction.createdAt,
+    transaction.updatedAt,
+    transaction.deletedAt,
+  ]
+    .map((value) => normalizeDate(value)?.getTime() || 0)
+    .filter((time, index, times) => time > 0 && times.indexOf(time) === index);
+
+const hasClosePrecisePaymentEventTime = (a: PaymentEventLike, b: PaymentEventLike) =>
+  getPrecisePaymentEventTimes(a).some((aTime) =>
+    getPrecisePaymentEventTimes(b).some((bTime) => Math.abs(aTime - bTime) <= 10000)
+  );
 
 const isSamePaymentEvent = (
-  a: { appointmentId?: string; amount?: number; logDate?: string; date?: string },
-  b: { appointmentId?: string; amount?: number; logDate?: string; date?: string }
+  a: PaymentEventLike,
+  b: PaymentEventLike
 ) => {
   if (!a.appointmentId || !b.appointmentId || a.appointmentId !== b.appointmentId) return false;
   if (Math.abs(toFiniteNumber(a.amount) - toFiniteNumber(b.amount)) > 0.01) return false;
 
-  const aTime = getTransactionTime(a);
-  const bTime = getTransactionTime(b);
-  if (!aTime || !bTime) return false;
-
-  return Math.abs(aTime - bTime) <= 10000;
+  return hasClosePaymentEventTime(a, b);
 };
 
 const isSamePaymentLogSource = (
-  logTransaction: { id?: string; appointmentId?: string; logDate?: string; date?: string },
-  representedPayment: { appointmentId?: string; transactionId?: string | null; logDate?: string; date?: string }
+  logTransaction: PaymentEventLike & { id?: string },
+  representedPayment: PaymentEventLike & { transactionId?: string | null }
 ) => {
   if (!logTransaction.appointmentId || !representedPayment.appointmentId) return false;
   if (logTransaction.appointmentId !== representedPayment.appointmentId) return false;
@@ -270,11 +306,7 @@ const isSamePaymentLogSource = (
     return true;
   }
 
-  const logTime = getTransactionTime(logTransaction);
-  const paymentTime = getTransactionTime(representedPayment);
-  if (!logTime || !paymentTime) return false;
-
-  return Math.abs(logTime - paymentTime) <= 10000;
+  return hasClosePrecisePaymentEventTime(logTransaction, representedPayment);
 };
 
 const toIsoDate = (value: unknown) => {
@@ -1695,7 +1727,8 @@ export const getRecentTransactions = async (
   res: Response<ApiResponse<RecentTransaction[]>>
 ) => {
   try {
-    const canSeeDeletedPayments = canViewDeletedPaymentRows(req);
+    const includeDeletedQuery = String((req.query as Record<string, string | undefined>).includeDeleted || "").toLowerCase();
+    const canSeeDeletedPayments = includeDeletedQuery === "true" && canViewDeletedPaymentRows(req);
     const requestedLimit = Number((req.query as Record<string, string | undefined>).limit || 25);
     const resultLimit = Math.max(1, Math.min(1000, Number.isFinite(requestedLimit) ? requestedLimit : 25));
     const sourceLimit = Math.min(5000, Math.max(100, resultLimit * 6));
@@ -1792,6 +1825,8 @@ export const getRecentTransactions = async (
         currentPaymentStatus: currentAppointmentSnapshot?.paymentStatus,
         appointmentSnapshot,
         logDate: payment.createdAt ? toIsoDate(payment.createdAt) : paymentDate,
+        createdAt: toIsoDate(payment.createdAt),
+        updatedAt: toIsoDate(payment.updatedAt),
         source: "payment",
         deleted: Boolean(payment.deleted),
         deletedAt: toIsoDate(payment.deletedAt),

@@ -80,6 +80,8 @@ export interface RecentTransaction {
   patientId?: string;
   paymentDate?: string;
   logDate?: string;
+  createdAt?: string | Date;
+  updatedAt?: string | Date;
   transactionId?: string;
   paymentId?: string;
   paymentRecordId?: string;

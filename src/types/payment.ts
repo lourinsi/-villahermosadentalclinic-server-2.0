@@ -29,6 +29,7 @@ export interface Payment {
   createdAt?: Date;
   updatedAt?: Date;
   deleted?: boolean;
+  deletedAt?: Date | null;
 }
 
 export interface ApiResponse<T> {

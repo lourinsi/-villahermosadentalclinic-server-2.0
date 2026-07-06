@@ -77,8 +77,20 @@ export interface RecentTransaction {
   method: string;
   appointmentId?: string;
   appointmentSnapshot?: any;
+  patientId?: string;
   paymentDate?: string;
   logDate?: string;
+  transactionId?: string;
+  paymentId?: string;
+  paymentRecordId?: string;
+  notes?: string;
+  currentAppointmentBalance?: number | null;
+  currentAppointmentTotalPaid?: number | null;
+  currentAppointmentPrice?: number | null;
+  currentAppointmentDiscount?: number | null;
+  currentPaymentStatus?: string | null;
+  deleted?: boolean;
+  deletedAt?: string | null;
   changedByName?: string;
   source?: string;
 }

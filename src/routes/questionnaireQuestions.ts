@@ -26,7 +26,7 @@ router.get("/", requireAuth, (req: Request, res: Response) => {
   }
 });
 
-router.post("/", requireAuth, requireRole(["admin", "receptionist"]), async (req: Request, res: Response) => {
+router.post("/", requireAuth, requireRole(["admin", "doctor", "receptionist"]), async (req: Request, res: Response) => {
   try {
     const question = await createQuestionnaireQuestion(req.body || {});
     res.status(201).json({
@@ -41,7 +41,7 @@ router.post("/", requireAuth, requireRole(["admin", "receptionist"]), async (req
   }
 });
 
-router.post("/baseline", requireAuth, requireRole(["admin", "receptionist"]), async (_req: Request, res: Response) => {
+router.post("/baseline", requireAuth, requireRole(["admin", "doctor", "receptionist"]), async (_req: Request, res: Response) => {
   try {
     const result = await seedBaselineQuestionnaireQuestions();
     res.status(result.added.length > 0 ? 201 : 200).json({
@@ -61,7 +61,7 @@ router.post("/baseline", requireAuth, requireRole(["admin", "receptionist"]), as
   }
 });
 
-router.put("/:id", requireAuth, requireRole(["admin", "receptionist"]), async (req: Request<{ id: string }>, res: Response) => {
+router.put("/:id", requireAuth, requireRole(["admin", "doctor", "receptionist"]), async (req: Request<{ id: string }>, res: Response) => {
   try {
     const question = await updateQuestionnaireQuestion(req.params.id, req.body || {});
     res.json({
@@ -76,7 +76,7 @@ router.put("/:id", requireAuth, requireRole(["admin", "receptionist"]), async (r
   }
 });
 
-router.delete("/:id", requireAuth, requireRole(["admin", "receptionist"]), async (req: Request<{ id: string }>, res: Response) => {
+router.delete("/:id", requireAuth, requireRole(["admin", "doctor", "receptionist"]), async (req: Request<{ id: string }>, res: Response) => {
   try {
     const question = await deleteQuestionnaireQuestion(req.params.id);
     res.json({

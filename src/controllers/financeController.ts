@@ -12,6 +12,7 @@ import {
 } from "../types/finance";
 import { prisma } from "../lib/prisma";
 import { getAppointmentTypeName } from "../utils/appointment-types";
+import { DoctorIdentity, withResolvedDoctor } from "../utils/doctorIdentity";
 import {
   createFinanceHistoryLog,
   findFinanceHistoryLogs,
@@ -24,6 +25,20 @@ const toDetailedExpense = (expense: unknown): DetailedExpense => expense as Deta
 const toFinanceHistoryLog = (log: unknown): FinanceHistoryLog => log as FinanceHistoryLog;
 type IdParams = { id: string };
 const EXPENSE_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899"];
+const UNASSIGNED_DOCTOR_NAME = "N/A";
+
+const getActiveDoctorStaff = async (): Promise<DoctorIdentity[]> =>
+  prisma.staff.findMany({
+    where: { deleted: false },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      profilePicture: true,
+      role: true,
+      specialization: true,
+    },
+  }) as Promise<DoctorIdentity[]>;
 
 const toFiniteNumber = (value: unknown) => {
   const number = Number(value);
@@ -118,6 +133,11 @@ const normalizeExpenseStatus = (value?: unknown): ExpenseStatus => {
 const isCancelledExpense = (expense: { status?: string | null }) =>
   normalizeExpenseStatus(expense.status) === "cancelled";
 
+const canViewDeletedPaymentRows = (req: Request) => {
+  const role = String((req as any).user?.role || "").toLowerCase();
+  return role === "admin" || role === "doctor";
+};
+
 const SALARY_RECORD_TYPES = new Set(["salary", "payroll", "monthlysalary"]);
 const MANAGED_PAYROLL_ADJUSTMENT_TYPE = "payroll_adjustment";
 const PAYROLL_ADJUSTMENT_TYPES = new Set([
@@ -166,6 +186,9 @@ const extractPaymentId = (description?: string | null) => {
   return match?.[1] || null;
 };
 
+const isPaymentLogId = (id?: string | null) =>
+  String(id || "").trim().startsWith("pay_log_");
+
 const extractAppointmentId = (description?: string | null) => {
   const text = String(description || "");
   const appointmentMatch = text.match(/\bappointment\s+([A-Za-z0-9_-]+)/i);
@@ -196,6 +219,52 @@ const getAppointmentServiceName = (appointment: any) =>
   appointment?.customType ||
   appointment?.serviceType ||
   getAppointmentTypeName(Number(appointment?.type), appointment?.customType);
+
+const getAppointmentTypeLabel = (appointment: any) => {
+  const customType = String(appointment?.customType || "").trim();
+  const serviceType = String(appointment?.serviceType || "").trim();
+  if (customType || serviceType) return customType || serviceType;
+
+  const type = appointment?.type;
+  if (typeof type === "number" || (typeof type === "string" && /^\d+$/.test(type))) {
+    return getAppointmentTypeName(Number(type), customType);
+  }
+
+  return String(appointment?.appointmentType || appointment?.typeLabel || type || "appointment").trim();
+};
+
+const resolveAppointmentForFinance = (
+  currentAppointment: any,
+  storedSnapshot: any,
+  doctorStaff: DoctorIdentity[]
+) => {
+  const current = currentAppointment
+    ? withResolvedDoctor(currentAppointment as Record<string, any>, doctorStaff)
+    : null;
+  const stored = storedSnapshot
+    ? withResolvedDoctor(storedSnapshot as Record<string, any>, doctorStaff)
+    : null;
+  const doctorSource = current || stored || {};
+  const doctorName = String(doctorSource.doctorName || doctorSource.doctor || "").trim() || UNASSIGNED_DOCTOR_NAME;
+  const appointmentSnapshot = current || stored
+    ? {
+        ...(stored || {}),
+        ...(current || {}),
+        doctor: doctorName,
+        doctorName,
+        doctorId: doctorSource.doctorId || null,
+        doctorProfile: doctorSource.doctorProfile || doctorSource.doctorProfilePicture || undefined,
+        doctorProfilePicture: doctorSource.doctorProfilePicture || doctorSource.doctorProfile || undefined,
+      }
+    : undefined;
+
+  return {
+    appointmentSnapshot,
+    doctor: doctorName,
+    doctorName,
+    doctorId: doctorSource.doctorId || null,
+  };
+};
 
 const findAppointmentForFinanceRecord = (
   record: {
@@ -233,44 +302,11 @@ const findAppointmentForFinanceRecord = (
   return amountMatches.length === 1 ? amountMatches[0] : null;
 };
 
-const getTransactionTime = (transaction: { logDate?: string; date?: string }) =>
-  normalizeDate(transaction.logDate || transaction.date)?.getTime() || 0;
+const getRecentTransactionPrimarySortTime = (transaction: RecentTransaction) =>
+  normalizeDate(transaction.paymentDate || transaction.date || transaction.logDate || transaction.createdAt)?.getTime() || 0;
 
-const isSamePaymentEvent = (
-  a: { appointmentId?: string; amount?: number; logDate?: string; date?: string },
-  b: { appointmentId?: string; amount?: number; logDate?: string; date?: string }
-) => {
-  if (!a.appointmentId || !b.appointmentId || a.appointmentId !== b.appointmentId) return false;
-  if (Math.abs(toFiniteNumber(a.amount) - toFiniteNumber(b.amount)) > 0.01) return false;
-
-  const aTime = getTransactionTime(a);
-  const bTime = getTransactionTime(b);
-  if (!aTime || !bTime) return false;
-
-  return Math.abs(aTime - bTime) <= 10000;
-};
-
-const isSamePaymentLogSource = (
-  logTransaction: { id?: string; appointmentId?: string; logDate?: string; date?: string },
-  representedPayment: { appointmentId?: string; transactionId?: string | null; logDate?: string; date?: string }
-) => {
-  if (!logTransaction.appointmentId || !representedPayment.appointmentId) return false;
-  if (logTransaction.appointmentId !== representedPayment.appointmentId) return false;
-
-  if (
-    logTransaction.id &&
-    representedPayment.transactionId &&
-    logTransaction.id === representedPayment.transactionId
-  ) {
-    return true;
-  }
-
-  const logTime = getTransactionTime(logTransaction);
-  const paymentTime = getTransactionTime(representedPayment);
-  if (!logTime || !paymentTime) return false;
-
-  return Math.abs(logTime - paymentTime) <= 10000;
-};
+const getRecentTransactionSecondarySortTime = (transaction: RecentTransaction) =>
+  normalizeDate(transaction.logDate || transaction.createdAt || transaction.updatedAt || transaction.date)?.getTime() || 0;
 
 const toIsoDate = (value: unknown) => {
   const date = normalizeDate(value);
@@ -1690,10 +1726,12 @@ export const getRecentTransactions = async (
   res: Response<ApiResponse<RecentTransaction[]>>
 ) => {
   try {
+    const includeDeletedQuery = String((req.query as Record<string, string | undefined>).includeDeleted || "").toLowerCase();
+    const canSeeDeletedPayments = includeDeletedQuery === "true" && canViewDeletedPaymentRows(req);
     const requestedLimit = Number((req.query as Record<string, string | undefined>).limit || 25);
     const resultLimit = Math.max(1, Math.min(1000, Number.isFinite(requestedLimit) ? requestedLimit : 25));
     const sourceLimit = Math.min(5000, Math.max(100, resultLimit * 6));
-    const [financeRecords, detailedExpenses, payments, appointmentPaymentLogs] = await Promise.all([
+    const [financeRecords, detailedExpenses, payments, doctorStaff] = await Promise.all([
       prisma.financeRecord.findMany({
         where: { deleted: false },
         orderBy: { date: "desc" },
@@ -1705,31 +1743,15 @@ export const getRecentTransactions = async (
         take: sourceLimit,
       }),
       prisma.payment.findMany({
-        where: { deleted: false },
         orderBy: { date: "desc" },
         take: sourceLimit,
       }),
-      prisma.appointmentLog.findMany({
-        where: {
-          AND: [
-            {
-              OR: [
-                { changeType: "payment" },
-                { amount: { gt: 0 } },
-              ],
-            },
-            { NOT: { changeType: "payment_adjustment" } },
-          ],
-        },
-        orderBy: { changedAt: "desc" },
-        take: sourceLimit,
-      }),
+      getActiveDoctorStaff(),
     ]);
 
     const paymentIds = new Set(payments.map((payment) => payment.id));
     const appointmentIds = Array.from(new Set([
       ...payments.map((payment) => payment.appointmentId).filter(Boolean),
-      ...appointmentPaymentLogs.map((log) => log.appointmentId).filter(Boolean),
       ...financeRecords
         .map((record) => extractAppointmentIdFromSnapshot(record.appointmentSnapshot))
         .filter((id): id is string => Boolean(id)),
@@ -1757,10 +1779,15 @@ export const getRecentTransactions = async (
       [...appointmentSnapshots, ...financeRecordAppointments].map((appointment) => [appointment.id, appointment])
     );
 
-    const paymentTransactions = payments.map((payment) => {
-      // Prefer any snapshot stored on the payment record; otherwise fallback to current appointment row
-      const appointmentSnapshot = (payment as any).appointmentSnapshot || appointmentSnapshotById.get(payment.appointmentId);
-      const serviceName = appointmentSnapshot?.customType || appointmentSnapshot?.serviceType || "appointment";
+    const allPaymentTransactions = payments.map((payment) => {
+      const currentAppointmentSnapshot = appointmentSnapshotById.get(payment.appointmentId);
+      const resolvedAppointment = resolveAppointmentForFinance(
+        currentAppointmentSnapshot,
+        (payment as any).appointmentSnapshot,
+        doctorStaff
+      );
+      const appointmentSnapshot = resolvedAppointment.appointmentSnapshot;
+      const serviceName = appointmentSnapshot ? getAppointmentTypeLabel(appointmentSnapshot) : "appointment";
       const paymentDate = dateOnlyKey(payment.date) || dateOnlyKey(payment.createdAt);
 
       return {
@@ -1775,20 +1802,35 @@ export const getRecentTransactions = async (
         method: normalizeMethod(payment.method),
         patientId: payment.patientId,
         appointmentId: payment.appointmentId,
+        doctor: resolvedAppointment.doctor,
+        doctorName: resolvedAppointment.doctorName,
         transactionId: payment.transactionId,
         paymentId: payment.id,
         paymentRecordId: payment.id,
         notes: payment.notes,
+        currentAppointmentBalance: currentAppointmentSnapshot?.balance,
+        currentAppointmentTotalPaid: currentAppointmentSnapshot?.totalPaid,
+        currentAppointmentPrice: currentAppointmentSnapshot?.price,
+        currentAppointmentDiscount: currentAppointmentSnapshot?.discount,
+        currentPaymentStatus: currentAppointmentSnapshot?.paymentStatus,
         appointmentSnapshot,
         logDate: payment.createdAt ? toIsoDate(payment.createdAt) : paymentDate,
+        createdAt: toIsoDate(payment.createdAt),
+        updatedAt: toIsoDate(payment.updatedAt),
         source: "payment",
+        deleted: Boolean(payment.deleted),
+        deletedAt: toIsoDate(payment.deletedAt),
       };
     });
+    const paymentTransactions = canSeeDeletedPayments
+      ? allPaymentTransactions
+      : allPaymentTransactions.filter((transaction) => !transaction.deleted && !transaction.deletedAt);
 
     const financeTransactions = financeRecords
       .filter((record) => isIncomeType(record.type) || isExpenseType(record.type))
       .filter((record) => {
         const paymentId = extractPaymentId(record.description);
+        if (isPaymentLogId(paymentId)) return false;
         return !paymentId || !paymentIds.has(paymentId);
       })
       .map((record) => {
@@ -1799,6 +1841,14 @@ export const getRecentTransactions = async (
           extractAppointmentId(record.description) ||
           matchedAppointment?.id ||
           undefined;
+        const currentAppointmentSnapshot = appointmentId
+          ? appointmentSnapshotById.get(appointmentId) || matchedAppointment
+          : matchedAppointment;
+        const resolvedAppointment = resolveAppointmentForFinance(
+          currentAppointmentSnapshot,
+          record.appointmentSnapshot,
+          doctorStaff
+        );
 
         return {
           id: record.id,
@@ -1811,59 +1861,18 @@ export const getRecentTransactions = async (
           type: isExpenseType(record.type) ? "expense" : "income",
           method: isIncomeType(record.type) ? "Payment" : "Finance record",
           appointmentId,
-          appointmentSnapshot: record.appointmentSnapshot
-            ? record.appointmentSnapshot
-            : (appointmentId ? appointmentSnapshotById.get(appointmentId) || matchedAppointment : matchedAppointment || undefined),
+          doctor: resolvedAppointment.doctor,
+          doctorName: resolvedAppointment.doctorName,
+          currentAppointmentBalance: currentAppointmentSnapshot?.balance,
+          currentAppointmentTotalPaid: currentAppointmentSnapshot?.totalPaid,
+          currentAppointmentPrice: currentAppointmentSnapshot?.price,
+          currentAppointmentDiscount: currentAppointmentSnapshot?.discount,
+          currentPaymentStatus: currentAppointmentSnapshot?.paymentStatus,
+          appointmentSnapshot: resolvedAppointment.appointmentSnapshot,
           logDate: record.createdAt ? toIsoDate(record.createdAt) : paymentDate,
           source: "finance-record",
         };
       });
-
-    const representedPaymentTransactions = [...paymentTransactions, ...financeTransactions]
-      .filter((transaction) => transaction.type === "income" && transaction.appointmentId && transaction.amount > 0);
-
-    const appointmentLogTransactions = appointmentPaymentLogs
-      .filter((log) => toFiniteNumber(log.amount) > 0)
-      .map((log) => {
-        const liveAppointment = appointmentSnapshotById.get(log.appointmentId);
-        const logSnapshot = (log.newState && typeof log.newState === "object" ? log.newState : null) as any;
-        const appointmentSnapshot = {
-          ...(liveAppointment || {}),
-          ...(logSnapshot || {}),
-          id: logSnapshot?.id || liveAppointment?.id || log.appointmentId,
-          appointmentId: log.appointmentId,
-          changedAt: toIsoDate(log.changedAt),
-          changedByName: log.changedByName || undefined,
-        };
-        const serviceName = getAppointmentServiceName(appointmentSnapshot);
-        const changedAt = normalizeDate(log.changedAt) || new Date();
-        const paymentDate = dateOnlyKey(logSnapshot?.paymentDate || (log as any).paymentDate);
-        const createdDate = dateKey(changedAt);
-        const transactionPaymentDate = paymentDate || createdDate;
-        const logDate = toIsoDate(log.changedAt) || transactionPaymentDate;
-
-        return {
-          id: log.id,
-          date: transactionPaymentDate,
-          paymentDate: transactionPaymentDate,
-          description: `Payment for ${serviceName}`,
-          amount: Math.abs(toFiniteNumber(log.amount)),
-          type: "income",
-          method: normalizeMethod(appointmentSnapshot.paymentMethod || "Payment log"),
-          appointmentId: log.appointmentId,
-          appointmentSnapshot,
-          logDate,
-          changedByName: log.changedByName || undefined,
-          source: "appointment-log",
-        };
-      })
-      .filter((transaction) =>
-        !representedPaymentTransactions.some(
-          (represented) =>
-            isSamePaymentLogSource(transaction, represented) ||
-            isSamePaymentEvent(transaction, represented)
-        )
-      );
 
     const expenseTransactions = detailedExpenses
       .filter((expense) => normalizeExpenseStatus(expense.status) === "paid")
@@ -1882,11 +1891,13 @@ export const getRecentTransactions = async (
         };
       });
 
-    const data = [...paymentTransactions, ...financeTransactions, ...appointmentLogTransactions, ...expenseTransactions]
+    const data = [...paymentTransactions, ...financeTransactions, ...expenseTransactions]
       .sort((a, b) => {
-        const aTime = normalizeDate(a.logDate || a.date)?.getTime() || 0;
-        const bTime = normalizeDate(b.logDate || b.date)?.getTime() || 0;
-        return bTime - aTime;
+        const primaryDiff =
+          getRecentTransactionPrimarySortTime(b) - getRecentTransactionPrimarySortTime(a);
+        if (primaryDiff !== 0) return primaryDiff;
+
+        return getRecentTransactionSecondarySortTime(b) - getRecentTransactionSecondarySortTime(a);
       })
       .slice(0, resultLimit);
 

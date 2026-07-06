@@ -27,7 +27,7 @@ export const PAYMENT_STATUSES: PaymentStatusOption[] = [
   {
     key: 3,
     value: "half-paid",
-    label: "Half Paid",
+    label: "Partial",
     description: "Partial payment received",
     ...getDefaultPaymentStatusColors("half-paid")
   },
@@ -41,7 +41,7 @@ export const PAYMENT_STATUSES: PaymentStatusOption[] = [
   {
     key: 5,
     value: "over-paid",
-    label: "Over-paid",
+    label: "Overpaid",
     description: "Payment exceeds appointment total",
     ...getDefaultPaymentStatusColors("over-paid")
   },

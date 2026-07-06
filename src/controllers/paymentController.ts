@@ -87,7 +87,8 @@ const hydratePaymentSnapshots = async (payments: any[]): Promise<Payment[]> => {
 };
 
 const paymentStatusFor = (totalPaid: number, balance: number): string => {
-  if (balance <= 0) return "paid";
+  if (balance < -0.01) return "over-paid";
+  if (balance <= 0.01) return "paid";
   if (totalPaid > 0) return "half-paid";
   return "unpaid";
 };
@@ -113,7 +114,15 @@ const appointmentData = (appointment: any, previousState?: any) => ({
 
 const isStaffRole = (req: Request): boolean => {
   const role = String((req as any).user?.role || "").toLowerCase();
-  return role === "admin" || role === "doctor";
+  return role === "admin" || role === "doctor" || role === "receptionist";
+};
+
+const isAdminRole = (req: Request): boolean =>
+  String((req as any).user?.role || "").toLowerCase() === "admin";
+
+const shouldIncludeDeletedPayments = (req: Request): boolean => {
+  const includeDeleted = String((req.query as any)?.includeDeleted || "").trim().toLowerCase();
+  return isAdminRole(req) && ["1", "true", "yes"].includes(includeDeleted);
 };
 
 const isCashPaymentMethod = (method: unknown): boolean =>
@@ -146,6 +155,18 @@ const numericAmount = (value: unknown) => {
   const amount = Number(value || 0);
   return Number.isFinite(amount) ? amount : 0;
 };
+
+const withPaymentLifecycleSnapshot = (appointment: any, payment: Payment | any): any => ({
+  ...appointment,
+  paymentId: payment?.id,
+  paymentRecordId: payment?.id,
+  transactionId: payment?.transactionId || "",
+  paymentDate: dateOnlyKey(payment?.date) || payment?.date || "",
+  paymentMethod: normalizePaymentMethodValue(payment?.method),
+  paymentAmount: Math.abs(numericAmount(payment?.amount)),
+  paymentDeleted: Boolean(payment?.deleted),
+  paymentDeletedAt: payment?.deletedAt ? new Date(payment.deletedAt).toISOString() : null,
+});
 
 const normalizePaymentMethod = (method?: string | null) =>
   String(method || "").trim().toLowerCase();
@@ -218,7 +239,6 @@ const materializePaymentFromPaymentLog = async (paymentLogId: string): Promise<P
 
   const existingPayments = await prisma.payment.findMany({
     where: {
-      deleted: false,
       appointmentId: paymentLog.appointmentId,
       amount: paymentAmount,
     },
@@ -232,7 +252,7 @@ const materializePaymentFromPaymentLog = async (paymentLogId: string): Promise<P
     ) ||
     existingPayments.find((payment) => dateOnlyKey(payment.date) === paymentDate);
 
-  if (existing) return toPayment(existing);
+  if (existing) return existing.deleted ? null : toPayment(existing);
 
   const payment = toPayment(await prisma.payment.create({
     data: {
@@ -304,7 +324,6 @@ const materializePaymentFromAppointmentLog = async (appointmentLogId: string): P
 
   const existingPayments = await prisma.payment.findMany({
     where: {
-      deleted: false,
       appointmentId: appointmentLog.appointmentId,
       amount: paymentAmount,
     },
@@ -318,7 +337,7 @@ const materializePaymentFromAppointmentLog = async (appointmentLogId: string): P
     ) ||
     existingPayments.find((payment) => dateOnlyKey(payment.date) === paymentDate);
 
-  if (existing) return toPayment(existing);
+  if (existing) return existing.deleted ? null : toPayment(existing);
 
   const payment = toPayment(await prisma.payment.create({
     data: {
@@ -383,7 +402,7 @@ export const createPayment = async (req: Request, res: Response<ApiResponse<any>
       return res.status(400).json({ success: false, message: "Missing appointmentId or invalid amount" });
     }
     if (isCashPaymentMethod(method) && !isStaffRole(req)) {
-      return res.status(403).json({ success: false, message: "Cash payments can only be recorded by admins or doctors" });
+      return res.status(403).json({ success: false, message: "Cash payments can only be recorded by staff" });
     }
 
     const appointment = toAppointment(
@@ -607,8 +626,9 @@ export const getPaymentsByAppointment = async (
   res: Response<ApiResponse<Payment[]>>
 ) => {
   try {
+    const includeDeleted = shouldIncludeDeletedPayments(req);
     const payments = await prisma.payment.findMany({
-      where: { deleted: false, appointmentId: req.params.id },
+      where: { ...(includeDeleted ? {} : { deleted: false }), appointmentId: req.params.id },
       orderBy: { createdAt: "desc" },
     });
     res.json({ success: true, data: await hydratePaymentSnapshots(payments) });
@@ -627,8 +647,9 @@ export const getPaymentsByPatient = async (
   res: Response<ApiResponse<Payment[]>>
 ) => {
   try {
+    const includeDeleted = shouldIncludeDeletedPayments(req);
     const payments = await prisma.payment.findMany({
-      where: { deleted: false, patientId: req.params.id },
+      where: { ...(includeDeleted ? {} : { deleted: false }), patientId: req.params.id },
       orderBy: { createdAt: "desc" },
     });
     res.json({ success: true, data: await hydratePaymentSnapshots(payments) });
@@ -780,15 +801,40 @@ export const updatePayment = async (req: Request<IdParams>, res: Response<ApiRes
 export const deletePayment = async (req: Request<IdParams>, res: Response<ApiResponse<any>>) => {
   try {
     const { id } = req.params;
+    const lookupId = normalizeEditablePaymentLookupId(id);
+    const existingPayment = toPayment(await prisma.payment.findUnique({ where: { id: lookupId } }));
+
+    if (existingPayment?.deleted) {
+      const deletedAt = existingPayment.deletedAt || new Date();
+      const repairedPayment = existingPayment.deletedAt
+        ? existingPayment
+        : toPayment(await prisma.payment.update({
+            where: { id: existingPayment.id },
+            data: { deletedAt, updatedAt: deletedAt },
+          }));
+
+      await prisma.financeRecord.updateMany({
+        where: { description: { contains: `Payment ${existingPayment.id}` } },
+        data: { deleted: true, deletedAt, updatedAt: deletedAt },
+      });
+
+      return res.json({
+        success: true,
+        message: "Payment already deleted",
+        data: { payment: repairedPayment },
+      });
+    }
+
     const payment = await findPaymentOrMaterialize(id);
     if (!payment || payment.deleted) {
       return res.status(404).json({ success: false, message: "Payment not found" });
     }
 
-    await prisma.payment.update({
+    const deletedAt = new Date();
+    const deletedPayment = toPayment(await prisma.payment.update({
       where: { id: payment.id },
-      data: { deleted: true, updatedAt: new Date() },
-    });
+      data: { deleted: true, deletedAt, updatedAt: deletedAt },
+    }));
 
     const appointment = toAppointment(
       await prisma.appointment.findUnique({ where: { id: payment.appointmentId } })
@@ -815,8 +861,8 @@ export const deletePayment = async (req: Request<IdParams>, res: Response<ApiRes
         (changedBy === "admin" ? "Admin" : changedBy);
       await createAppointmentLog(
         payment.appointmentId,
-        oldAppointment,
-        savedAppointment,
+        withPaymentLifecycleSnapshot(oldAppointment, payment),
+        withPaymentLifecycleSnapshot(savedAppointment, deletedPayment),
         changedBy,
         changedByName,
         "payment",
@@ -849,26 +895,153 @@ export const deletePayment = async (req: Request<IdParams>, res: Response<ApiRes
       }
     }
 
-    await prisma.patient.updateMany({
-      where: { id: payment.patientId || undefined },
-      data: { balance: { increment: payment.amount }, updatedAt: new Date() },
-    });
+    const patientIdForBalance = payment.patientId || appointment?.patientId;
+    if (patientIdForBalance) {
+      await prisma.patient.updateMany({
+        where: { id: patientIdForBalance },
+        data: { balance: { increment: payment.amount }, updatedAt: new Date() },
+      });
+    }
 
     await prisma.financeRecord.updateMany({
       where: { description: { contains: `Payment ${payment.id}` } },
-      data: { deleted: true, updatedAt: new Date() },
+      data: { deleted: true, deletedAt, updatedAt: deletedAt },
     });
 
     res.json({
       success: true,
       message: "Payment deleted successfully",
-      data: { payment: { ...payment, deleted: true } },
+      data: { payment: deletedPayment },
     });
   } catch (error) {
     console.error("[DELETE PAYMENT] Error:", error);
     res.status(500).json({
       success: false,
       message: "Error deleting payment",
+      error: error instanceof Error ? error.message : error,
+    });
+  }
+};
+
+export const restorePayment = async (req: Request<IdParams>, res: Response<ApiResponse<any>>) => {
+  try {
+    if (!isAdminRole(req)) {
+      return res.status(403).json({ success: false, message: "Only admins can restore payments" });
+    }
+
+    const lookupId = normalizeEditablePaymentLookupId(req.params.id);
+    const payment = toPayment(await prisma.payment.findUnique({ where: { id: lookupId } }));
+
+    if (!payment) {
+      return res.status(404).json({ success: false, message: "Payment not found" });
+    }
+
+    if (!payment.deleted) {
+      return res.json({
+        success: true,
+        message: "Payment is already active",
+        data: { payment },
+      });
+    }
+
+    const appointment = toAppointment(
+      await prisma.appointment.findUnique({ where: { id: payment.appointmentId } })
+    );
+
+    if (!appointment) {
+      return res.status(404).json({
+        success: false,
+        message: "Cannot restore payment because the linked appointment was not found",
+      });
+    }
+
+    const restoredAt = new Date();
+    const restoredAmount = Math.abs(numericAmount(payment.amount));
+    const oldAppointment = { ...appointment };
+    const oldPaymentStatus = appointment.paymentStatus || "unpaid";
+    const totalPaid = Math.max(0, Number(appointment.totalPaid || 0) + restoredAmount);
+    const balance = Number(appointment.price || 0) - Number(appointment.discount || 0) - totalPaid;
+    const newPaymentStatus = paymentStatusFor(totalPaid, balance);
+
+    const patientIdForBalance = payment.patientId || appointment.patientId;
+    const { restoredPayment, savedAppointment } = await prisma.$transaction(async (tx) => {
+      const restoredPayment = await tx.payment.update({
+        where: { id: payment.id },
+        data: { deleted: false, deletedAt: null, updatedAt: restoredAt },
+      });
+      const savedAppointment = await tx.appointment.update({
+        where: { id: payment.appointmentId },
+        data: { totalPaid, balance, paymentStatus: newPaymentStatus, updatedAt: restoredAt },
+      });
+      await tx.financeRecord.updateMany({
+        where: { description: { contains: `Payment ${payment.id}` } },
+        data: { deleted: false, deletedAt: null, updatedAt: restoredAt },
+      });
+
+      if (patientIdForBalance) {
+        await tx.patient.updateMany({
+          where: { id: patientIdForBalance },
+          data: { balance: { decrement: restoredAmount }, updatedAt: restoredAt },
+        });
+      }
+
+      return { restoredPayment, savedAppointment };
+    });
+    const savedAppointmentData = toAppointment(savedAppointment);
+
+    const changedBy = (req as any).user?.id || (req as any).user?.username || "admin";
+    const changedByName =
+      (req as any).user?.name ||
+      (req as any).user?.username ||
+      (changedBy === "admin" ? "Admin" : changedBy);
+
+    await createAppointmentLog(
+      payment.appointmentId,
+      withPaymentLifecycleSnapshot(oldAppointment, payment),
+      withPaymentLifecycleSnapshot(savedAppointmentData, restoredPayment),
+      changedBy,
+      changedByName,
+      "payment",
+      restoredAmount,
+      "Payment restored"
+    );
+
+    await createPaymentLog(
+      payment.appointmentId,
+      restoredAmount,
+      normalizePaymentMethodValue(payment.method),
+      savedAppointmentData.paymentStatus || "unpaid",
+      changedBy,
+      oldAppointment.balance || 0,
+      savedAppointmentData.balance || 0,
+      changedByName
+    );
+
+    if ((savedAppointmentData.paymentStatus || "unpaid") !== oldPaymentStatus) {
+      const doctorStaff = await getActiveDoctorStaff();
+      const patients = await getActivePatientIdentities([savedAppointmentData.patientId, payment.patientId]);
+      const oldAppointmentForNotifications = withResolvedAppointmentReferences(oldAppointment, doctorStaff, patients);
+      const savedAppointmentForNotifications = withResolvedAppointmentReferences(savedAppointmentData, doctorStaff, patients);
+      await notifyStatusChange(
+        payment.appointmentId,
+        "payment",
+        oldPaymentStatus,
+        savedAppointmentData.paymentStatus || "unpaid",
+        await resolveRecipients(savedAppointmentData),
+        appointmentData(savedAppointmentForNotifications, oldAppointmentForNotifications)
+      );
+    }
+
+    res.json({
+      success: true,
+      message: "Payment restored successfully",
+      data: { payment: restoredPayment, appointment: savedAppointmentData },
+    });
+  } catch (error) {
+    console.error("[RESTORE PAYMENT] Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error restoring payment",
       error: error instanceof Error ? error.message : error,
     });
   }

@@ -299,7 +299,8 @@ const getStoredAppointmentTotalPaid = (appointment: Appointment): number => {
 };
 
 const getPaymentStatusFromTotals = (totalPaid: number, balance: number): PaymentStatusValue => {
-  if (balance <= 0) return "paid";
+  if (balance < -0.01) return "over-paid";
+  if (balance <= 0.01) return "paid";
   if (totalPaid > 0) return "half-paid";
   return "unpaid";
 };
@@ -478,6 +479,8 @@ const buildAppointmentUpdateData = (updates: Partial<Appointment>) => {
     "balance",
     "totalPaid",
     "transactions", // Keep transactions for backward compatibility if needed, but it's deprecated.
+    "deleted",
+    "deletedAt",
   ] as const;
 
   const data: Record<string, any> = {};
@@ -661,7 +664,7 @@ export const addAppointment = async (
     if (!isSeeding && isStaffRole(req) && isPatientCartStatus(requestedStatus)) {
       return res.status(400).json({
         success: false,
-        message: "Admin and doctor users cannot create Add to Cart appointments.",
+        message: "Staff users cannot create Add to Cart appointments.",
       });
     }
     if (!isSeeding && isCashPaymentMethod(appointmentInput.paymentMethod) && !isStaffRole(req)) {
@@ -1136,7 +1139,7 @@ export const updateAppointment = async (
     ) {
       return res.status(403).json({
         success: false,
-        message: "Cash payments can only be recorded by admins or doctors",
+        message: "Cash payments can only be recorded by staff",
       });
     }
     if (Object.prototype.hasOwnProperty.call(updates, "toothNumbers")) {
@@ -1207,7 +1210,7 @@ export const updateAppointment = async (
     if (isStaffRole(req) && isPatientCartStatus(updatedAppointment.status)) {
       return res.status(400).json({
         success: false,
-        message: "Admin and doctor users cannot set appointments to Add to Cart.",
+        message: "Staff users cannot set appointments to Add to Cart.",
       });
     }
 
@@ -1240,6 +1243,16 @@ export const updateAppointment = async (
       const discount = (updatedAppointment as any).discount || 0;
       updatedAppointment.balance = Math.max(0, price - discount - (updatedAppointment.totalPaid || 0));
       updates.balance = updatedAppointment.balance;
+    }
+
+    if (
+      isDeletedAppointmentStatus(oldAppointment.status) &&
+      !isDeletedAppointmentStatus(updatedAppointment.status)
+    ) {
+      (updatedAppointment as any).deleted = false;
+      (updatedAppointment as any).deletedAt = null;
+      (updates as any).deleted = false;
+      (updates as any).deletedAt = null;
     }
 
     const changedBy = (req as any).user?.id || (req as any).user?.username || "admin";
@@ -1437,7 +1450,7 @@ export const deleteAppointment = async (
 
     const deletedAppointment = toAppointment(await prisma.appointment.update({
       where: { id: appointmentId },
-      data: { status: "deleted", deleted: false, deletedAt: new Date(), updatedAt: new Date() },
+      data: { status: "deleted", deleted: true, deletedAt: new Date(), updatedAt: new Date() },
     }));
 
     if (appointment.id) {
@@ -1521,7 +1534,7 @@ export const bookPublicAppointment = async (
     if (isCashPaymentMethod(paymentMethodFromClient)) {
       return res.status(403).json({
         success: false,
-        message: "Cash payments can only be recorded by admins or doctors",
+        message: "Cash payments can only be recorded by staff",
       });
     }
     if (requestedInitialPaymentAmount > 0 && paymentDateFromClient && !requestedPaymentDate) {

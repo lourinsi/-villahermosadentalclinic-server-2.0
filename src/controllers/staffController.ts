@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import bcrypt from "bcryptjs";
 import {
   Staff,
   StaffFinancialRecord,
@@ -14,6 +15,8 @@ interface Attendance extends BaseAttendance {
   date: string;
   status: string;
 }
+
+const DEFAULT_STAFF_PASSWORD = "password";
 
 const staffUpdateFields = [
   "name",
@@ -71,6 +74,9 @@ const buildStaffUpdateData = (input: Record<string, any>) => {
   return data;
 };
 
+const hashStaffPassword = (password: unknown) =>
+  bcrypt.hash(String(password || DEFAULT_STAFF_PASSWORD), 10);
+
 const payrollFinancialRecordTypes = new Set([
   "salary",
   "payroll",
@@ -125,7 +131,7 @@ export const createStaff = async (
         employmentType: staffData.employmentType || "",
         specialization: staffData.specialization || "",
         licenseNumber: staffData.licenseNumber || "",
-        password: staffData.password || null,
+        password: await hashStaffPassword(staffData.password),
         profilePicture: staffData.profilePicture || null,
         bio: staffData.bio || null,
         createdAt: new Date(),
@@ -269,9 +275,14 @@ export const updateStaff = async (
       });
     }
 
+    const updateData = buildStaffUpdateData(req.body);
+    if (Object.prototype.hasOwnProperty.call(updateData, "password")) {
+      updateData.password = await hashStaffPassword(updateData.password);
+    }
+
     const updatedStaff = await prisma.staff.update({
       where: { id: req.params.id },
-      data: buildStaffUpdateData(req.body) as any,
+      data: updateData as any,
     });
     const nameChanged =
       Object.prototype.hasOwnProperty.call(req.body, "name") &&

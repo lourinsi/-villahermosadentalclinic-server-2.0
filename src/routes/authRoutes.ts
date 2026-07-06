@@ -9,6 +9,6 @@ router.post("/login", login);
 router.post("/logout", logout);
 router.get("/verify", verifyToken);
 router.post("/register", register);
-router.post("/change-password", requireAuth, requireRole(["admin", "receptionist"]), changePassword);
+router.post("/change-password", requireAuth, requireRole(["admin", "doctor", "receptionist"]), changePassword);
 
 export default router;

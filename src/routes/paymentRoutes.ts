@@ -1,5 +1,5 @@
 import express from "express";
-import { createPayment, getPaymentById, getPaymentsByAppointment, getPaymentsByPatient, updatePayment, deletePayment } from "../controllers/paymentController";
+import { createPayment, getPaymentById, getPaymentsByAppointment, getPaymentsByPatient, updatePayment, deletePayment, restorePayment } from "../controllers/paymentController";
 import { requireAuth } from "../middleware/authMiddleware";
 
 const router = express.Router();
@@ -18,6 +18,9 @@ router.get("/patient/:id", requireAuth, getPaymentsByPatient);
 
 // Create payment (generic)
 router.post("/", requireAuth, createPayment);
+
+// Restore soft-deleted payment
+router.post("/:id/restore", requireAuth, restorePayment);
 
 // Fetch a single payment
 router.get("/:id", requireAuth, getPaymentById);

@@ -309,6 +309,12 @@ const isSamePaymentLogSource = (
   return hasClosePrecisePaymentEventTime(logTransaction, representedPayment);
 };
 
+const getRecentTransactionPrimarySortTime = (transaction: RecentTransaction) =>
+  normalizeDate(transaction.paymentDate || transaction.date || transaction.logDate || transaction.createdAt)?.getTime() || 0;
+
+const getRecentTransactionSecondarySortTime = (transaction: RecentTransaction) =>
+  normalizeDate(transaction.logDate || transaction.createdAt || transaction.updatedAt || transaction.date)?.getTime() || 0;
+
 const toIsoDate = (value: unknown) => {
   const date = normalizeDate(value);
   return date ? date.toISOString() : undefined;
@@ -1882,6 +1888,7 @@ export const getRecentTransactions = async (
       .filter((log) => toFiniteNumber(log.amount) > 0)
       .map((log) => {
         const liveAppointment = appointmentSnapshotById.get(log.appointmentId);
+        const previousLogSnapshot = (log.previousState && typeof log.previousState === "object" ? log.previousState : null) as any;
         const logSnapshot = (log.newState && typeof log.newState === "object" ? log.newState : null) as any;
         const appointmentSnapshot = {
           ...(liveAppointment || {}),
@@ -1897,16 +1904,33 @@ export const getRecentTransactions = async (
         const createdDate = dateKey(changedAt);
         const transactionPaymentDate = paymentDate || createdDate;
         const logDate = toIsoDate(log.changedAt) || transactionPaymentDate;
+        const paymentRecordId =
+          logSnapshot?.paymentRecordId ||
+          logSnapshot?.paymentId ||
+          previousLogSnapshot?.paymentRecordId ||
+          previousLogSnapshot?.paymentId ||
+          undefined;
+        const transactionId =
+          logSnapshot?.transactionId ||
+          previousLogSnapshot?.transactionId ||
+          log.id;
+        const paymentAmount = Math.abs(toFiniteNumber(log.amount));
 
         return {
           id: log.id,
           date: transactionPaymentDate,
           paymentDate: transactionPaymentDate,
           description: `Payment for ${serviceName}`,
-          amount: Math.abs(toFiniteNumber(log.amount)),
+          amount: paymentAmount,
+          paymentAmount,
           type: "income",
           method: normalizeMethod(appointmentSnapshot.paymentMethod || "Payment log"),
           appointmentId: log.appointmentId,
+          transactionId,
+          paymentId: paymentRecordId,
+          paymentRecordId,
+          previousBalance: previousLogSnapshot?.balance,
+          newBalance: logSnapshot?.balance,
           currentAppointmentBalance: liveAppointment?.balance,
           currentAppointmentTotalPaid: liveAppointment?.totalPaid,
           currentAppointmentPrice: liveAppointment?.price,
@@ -1945,9 +1969,11 @@ export const getRecentTransactions = async (
 
     const data = [...paymentTransactions, ...financeTransactions, ...appointmentLogTransactions, ...expenseTransactions]
       .sort((a, b) => {
-        const aTime = normalizeDate(a.logDate || a.date)?.getTime() || 0;
-        const bTime = normalizeDate(b.logDate || b.date)?.getTime() || 0;
-        return bTime - aTime;
+        const primaryDiff =
+          getRecentTransactionPrimarySortTime(b) - getRecentTransactionPrimarySortTime(a);
+        if (primaryDiff !== 0) return primaryDiff;
+
+        return getRecentTransactionSecondarySortTime(b) - getRecentTransactionSecondarySortTime(a);
       })
       .slice(0, resultLimit);
 

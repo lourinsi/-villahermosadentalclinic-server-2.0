@@ -14,10 +14,11 @@ const TEST_DOCTOR_PASSWORD = "password";
 const TEST_DOCTOR_STAFF_ID = "seed_staff_test_doctor";
 let TEST_DOCTOR_PASSWORD_HASH: string;
 
-const DEFAULT_DOCTOR_PASSWORD = "doctor123";
+const DEFAULT_STAFF_PASSWORD = "password";
+const DEFAULT_DOCTOR_PASSWORD = DEFAULT_STAFF_PASSWORD;
 let DOCTOR_PASSWORD_HASH: string;
 
-const DEFAULT_RECEPTIONIST_PASSWORD = "password";
+const DEFAULT_RECEPTIONIST_PASSWORD = DEFAULT_STAFF_PASSWORD;
 let RECEPTIONIST_PASSWORD_HASH: string;
 
 const DEFAULT_PATIENT_PASSWORD = "villahermosa123";
@@ -153,9 +154,26 @@ const signToken = (payload: Record<string, unknown>) =>
 const getStaffPortalRole = (staffRole?: string | null) => {
   const role = String(staffRole || "").toLowerCase();
   if (role === "doctor" || role.includes("dentist")) return "doctor";
-  if (role.includes("reception")) return "receptionist";
-  return "";
+  return "receptionist";
 };
+
+const isStaffRole = (role?: string | null) => {
+  const normalizedRole = String(role || "").toLowerCase();
+  return normalizedRole === "doctor" || normalizedRole === "receptionist";
+};
+
+const isUsingDefaultStaffPassword = async (passwordHash?: string | null) => {
+  if (!passwordHash) return true;
+  return bcrypt.compare(DEFAULT_STAFF_PASSWORD, passwordHash);
+};
+
+const getStaffUserPayload = async (staff: { id: string; name: string; password?: string | null }, portalRole: string) => ({
+  username: staff.name,
+  name: staff.name,
+  role: portalRole,
+  staffId: staff.id,
+  mustChangePassword: await isUsingDefaultStaffPassword(staff.password),
+});
 
 export const login = async (
   req: express.Request,
@@ -196,12 +214,6 @@ export const login = async (
     }
 
     if (username.toLowerCase() === TEST_DOCTOR_USERNAME) {
-      const isPasswordValid = await bcrypt.compare(password, TEST_DOCTOR_PASSWORD_HASH);
-      if (!isPasswordValid) {
-        res.status(401).json({ success: false, message: "Invalid credentials" });
-        return;
-      }
-
       const doctor = await prisma.staff.findFirst({
         where: { id: TEST_DOCTOR_STAFF_ID, deleted: false },
       });
@@ -214,19 +226,24 @@ export const login = async (
         return;
       }
 
-      const token = signToken({
-        username: doctor.name,
-        name: doctor.name,
-        role: "doctor",
-        staffId: doctor.id,
-      });
+      const isPasswordValid = await bcrypt.compare(
+        password,
+        doctor.password || TEST_DOCTOR_PASSWORD_HASH
+      );
+      if (!isPasswordValid) {
+        res.status(401).json({ success: false, message: "Invalid credentials" });
+        return;
+      }
+
+      const userPayload = await getStaffUserPayload(doctor, "doctor");
+      const token = signToken(userPayload);
 
       setAuthCookie(res, token);
       res.status(200).json({
         success: true,
         message: "Login successful",
         token,
-        user: { username: doctor.name, role: "doctor", staffId: doctor.id },
+        user: userPayload,
       });
       return;
     }
@@ -253,19 +270,15 @@ export const login = async (
         return;
       }
 
-      const token = signToken({
-        username: matchingStaff.name,
-        name: matchingStaff.name,
-        role: portalRole,
-        staffId: matchingStaff.id,
-      });
+      const userPayload = await getStaffUserPayload(matchingStaff, portalRole);
+      const token = signToken(userPayload);
 
       setAuthCookie(res, token);
       res.status(200).json({
         success: true,
         message: "Login successful",
         token,
-        user: { username: matchingStaff.name, role: portalRole, staffId: matchingStaff.id },
+        user: userPayload,
       });
       return;
     }
@@ -354,10 +367,10 @@ export const logout = (
   }
 };
 
-export const verifyToken = (
+export const verifyToken = async (
   req: express.Request,
   res: express.Response
-): void => {
+): Promise<void> => {
   try {
     const token = req.cookies.authToken || req.headers.authorization?.split(" ")[1];
 
@@ -369,12 +382,29 @@ export const verifyToken = (
       return;
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    let user = decoded;
+
+    if (isStaffRole(decoded?.role) && decoded?.staffId) {
+      const staff = await prisma.staff.findFirst({
+        where: { id: String(decoded.staffId), deleted: false },
+      });
+
+      if (staff) {
+        user = {
+          ...decoded,
+          username: staff.name,
+          name: staff.name,
+          staffId: staff.id,
+          mustChangePassword: await isUsingDefaultStaffPassword(staff.password),
+        };
+      }
+    }
 
     res.status(200).json({
       success: true,
       message: "Token is valid",
-      user: decoded,
+      user,
     });
   } catch (error) {
     console.error("[AUTH] Token verification error:", error);
@@ -428,7 +458,7 @@ export const changePassword = async (
       return;
     }
 
-    if (role === "receptionist") {
+    if (role === "receptionist" || role === "doctor") {
       const staffId = String(user.staffId || "");
       if (!staffId) {
         res.status(400).json({ success: false, message: "Staff account is missing" });
@@ -441,14 +471,19 @@ export const changePassword = async (
         return;
       }
 
-      const passwordHash = staff.password || RECEPTIONIST_PASSWORD_HASH;
+      if (newPassword === DEFAULT_STAFF_PASSWORD) {
+        res.status(400).json({ success: false, message: "Please choose a new password different from the default password" });
+        return;
+      }
+
+      const passwordHash = staff.password || (role === "doctor" ? DOCTOR_PASSWORD_HASH : RECEPTIONIST_PASSWORD_HASH);
       const isCurrentPasswordValid = await bcrypt.compare(currentPassword, passwordHash);
       if (!isCurrentPasswordValid) {
         res.status(401).json({ success: false, message: "Current password is incorrect" });
         return;
       }
 
-      await prisma.staff.update({
+      const updatedStaff = await prisma.staff.update({
         where: { id: staffId },
         data: {
           password: await bcrypt.hash(newPassword, 10),
@@ -456,11 +491,20 @@ export const changePassword = async (
         },
       });
 
-      res.status(200).json({ success: true, message: "Password changed successfully" });
+      const userPayload = await getStaffUserPayload(updatedStaff, role);
+      const token = signToken(userPayload);
+      setAuthCookie(res, token);
+
+      res.status(200).json({
+        success: true,
+        message: "Password changed successfully",
+        token,
+        user: userPayload,
+      });
       return;
     }
 
-    res.status(403).json({ success: false, message: "Password changes are only available for admins and receptionists" });
+    res.status(403).json({ success: false, message: "Password changes are only available for internal staff accounts" });
   } catch (error) {
     console.error("[AUTH] Change password error:", error);
     res.status(500).json({

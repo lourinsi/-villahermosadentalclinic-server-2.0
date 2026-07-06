@@ -664,7 +664,7 @@ export const addAppointment = async (
     if (!isSeeding && isStaffRole(req) && isPatientCartStatus(requestedStatus)) {
       return res.status(400).json({
         success: false,
-        message: "Admin and doctor users cannot create Add to Cart appointments.",
+        message: "Staff users cannot create Add to Cart appointments.",
       });
     }
     if (!isSeeding && isCashPaymentMethod(appointmentInput.paymentMethod) && !isStaffRole(req)) {
@@ -1139,7 +1139,7 @@ export const updateAppointment = async (
     ) {
       return res.status(403).json({
         success: false,
-        message: "Cash payments can only be recorded by admins or doctors",
+        message: "Cash payments can only be recorded by staff",
       });
     }
     if (Object.prototype.hasOwnProperty.call(updates, "toothNumbers")) {
@@ -1210,7 +1210,7 @@ export const updateAppointment = async (
     if (isStaffRole(req) && isPatientCartStatus(updatedAppointment.status)) {
       return res.status(400).json({
         success: false,
-        message: "Admin and doctor users cannot set appointments to Add to Cart.",
+        message: "Staff users cannot set appointments to Add to Cart.",
       });
     }
 
@@ -1534,7 +1534,7 @@ export const bookPublicAppointment = async (
     if (isCashPaymentMethod(paymentMethodFromClient)) {
       return res.status(403).json({
         success: false,
-        message: "Cash payments can only be recorded by admins or doctors",
+        message: "Cash payments can only be recorded by staff",
       });
     }
     if (requestedInitialPaymentAmount > 0 && paymentDateFromClient && !requestedPaymentDate) {

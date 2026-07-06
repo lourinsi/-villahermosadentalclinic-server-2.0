@@ -121,9 +121,8 @@ const isAdminRole = (req: Request): boolean =>
   String((req as any).user?.role || "").toLowerCase() === "admin";
 
 const shouldIncludeDeletedPayments = (req: Request): boolean => {
-  const role = String((req as any).user?.role || "").toLowerCase();
   const includeDeleted = String((req.query as any)?.includeDeleted || "").trim().toLowerCase();
-  return role !== "receptionist" && isStaffRole(req) && ["1", "true", "yes"].includes(includeDeleted);
+  return isAdminRole(req) && ["1", "true", "yes"].includes(includeDeleted);
 };
 
 const isCashPaymentMethod = (method: unknown): boolean =>
@@ -165,6 +164,8 @@ const withPaymentLifecycleSnapshot = (appointment: any, payment: Payment | any):
   paymentDate: dateOnlyKey(payment?.date) || payment?.date || "",
   paymentMethod: normalizePaymentMethodValue(payment?.method),
   paymentAmount: Math.abs(numericAmount(payment?.amount)),
+  paymentDeleted: Boolean(payment?.deleted),
+  paymentDeletedAt: payment?.deletedAt ? new Date(payment.deletedAt).toISOString() : null,
 });
 
 const normalizePaymentMethod = (method?: string | null) =>
@@ -401,7 +402,7 @@ export const createPayment = async (req: Request, res: Response<ApiResponse<any>
       return res.status(400).json({ success: false, message: "Missing appointmentId or invalid amount" });
     }
     if (isCashPaymentMethod(method) && !isStaffRole(req)) {
-      return res.status(403).json({ success: false, message: "Cash payments can only be recorded by admins or doctors" });
+      return res.status(403).json({ success: false, message: "Cash payments can only be recorded by staff" });
     }
 
     const appointment = toAppointment(
@@ -861,7 +862,7 @@ export const deletePayment = async (req: Request<IdParams>, res: Response<ApiRes
       await createAppointmentLog(
         payment.appointmentId,
         withPaymentLifecycleSnapshot(oldAppointment, payment),
-        withPaymentLifecycleSnapshot(savedAppointment, payment),
+        withPaymentLifecycleSnapshot(savedAppointment, deletedPayment),
         changedBy,
         changedByName,
         "payment",

@@ -510,6 +510,12 @@ const HISTORY_APPOINTMENT_STATUSES = new Set(["scheduled", "completed", "cancell
 const isDeletedAppointmentStatus = (status?: string | null): boolean =>
   normalizeStatus(status) === "deleted";
 
+const isSoftDeletedAppointment = (appointment: Pick<Appointment, "status" | "deleted">): boolean =>
+  Boolean(appointment.deleted) || isDeletedAppointmentStatus(appointment.status);
+
+const getAppointmentResponseStatus = (appointment: Pick<Appointment, "status" | "deleted">): string =>
+  isSoftDeletedAppointment(appointment) ? "deleted" : normalizeStatus(appointment.status);
+
 const getAppointmentSortValue = (
   appointment: Appointment,
   sortBy?: string,
@@ -524,7 +530,7 @@ const getAppointmentSortValue = (
     case "doctor":
       return String(withResolvedDoctor(appointment as any, doctorStaff).doctor || "").toLowerCase();
     case "status":
-      return normalizeStatus(appointment.status);
+      return getAppointmentResponseStatus(appointment);
     case "payment":
       return normalizeStatus(appointment.paymentStatus || "unpaid");
     case "booked":
@@ -850,7 +856,12 @@ export const getAppointments = async (
     const limitNum = Math.max(1, Math.min(100, parseInt(limit || "20", 10) || 20));
 
     const canSeeDeletedAppointments = isAdminRole(req);
-    let filtered = appointments.filter((appointment) => !appointment.deleted);
+    let filtered = appointments.filter((appointment) => {
+      if (isSoftDeletedAppointment(appointment)) {
+        return canSeeDeletedAppointments;
+      }
+      return true;
+    });
 
     if (!canSeeDeletedAppointments) {
       filtered = filtered.filter((appointment) => !isDeletedAppointmentStatus(appointment.status));
@@ -1067,8 +1078,7 @@ export const getAppointmentById = async (
 
     if (
       !appointment ||
-      appointment.deleted ||
-      (!isAdminRole(req) && isDeletedAppointmentStatus(appointment.status))
+      (!isAdminRole(req) && isSoftDeletedAppointment(appointment))
     ) {
       return res.status(404).json({ success: false, message: "Appointment not found" });
     }
@@ -1086,7 +1096,7 @@ export const getAppointmentById = async (
       message: "Appointment retrieved successfully",
       data: withResolvedDoctor(
         withResolvedPatient(
-          { ...appointment, status: normalizeStatus(appointment.status) },
+          { ...appointment, status: getAppointmentResponseStatus(appointment) },
           patientRecord ? [patientRecord] : []
         ),
         doctorStaff
@@ -1128,7 +1138,7 @@ export const updateAppointment = async (
     if (
       !oldAppointment ||
       (isStaffRole(req) && isPatientCartStatus(oldAppointment.status)) ||
-      (!isAdminRole(req) && isDeletedAppointmentStatus(oldAppointment.status))
+      (!isAdminRole(req) && isSoftDeletedAppointment(oldAppointment))
     ) {
       return res.status(404).json({ success: false, message: "Appointment not found" });
     }
@@ -1199,14 +1209,48 @@ export const updateAppointment = async (
     if (updates.duration !== undefined) {
       updates.duration = updatedAppointment.duration;
     }
-    const restrictedStatus = getPastRestrictedAppointmentStatus(
-      updatedAppointment.date,
-      updatedAppointment.status
-    );
-    if (restrictedStatus !== updatedAppointment.status) {
-      updatedAppointment.status = restrictedStatus;
-      updates.status = restrictedStatus;
+    const oldWasSoftDeleted = isSoftDeletedAppointment(oldAppointment);
+    const statusWasProvided = hasOwnField(updates, "status");
+    const deletedWasProvided = hasOwnField(updates, "deleted");
+    if (!oldWasSoftDeleted) {
+      const restrictedStatus = getPastRestrictedAppointmentStatus(
+        updatedAppointment.date,
+        updatedAppointment.status
+      );
+      if (restrictedStatus !== updatedAppointment.status) {
+        updatedAppointment.status = restrictedStatus;
+        updates.status = restrictedStatus;
+      }
     }
+
+    const requestedStatus = statusWasProvided
+      ? normalizeStatus(updates.status)
+      : normalizeStatus(updatedAppointment.status);
+    const shouldRestoreAppointment =
+      oldWasSoftDeleted &&
+      !(requestedStatus === "deleted" || (deletedWasProvided && updates.deleted === true)) &&
+      ((statusWasProvided && requestedStatus !== "deleted") || (deletedWasProvided && updates.deleted === false));
+    const shouldDeleteAppointment =
+      !shouldRestoreAppointment &&
+      (oldWasSoftDeleted || requestedStatus === "deleted" || (deletedWasProvided && updates.deleted === true));
+
+    if (shouldDeleteAppointment) {
+      const deletedAt = oldWasSoftDeleted && oldAppointment.deletedAt ? oldAppointment.deletedAt : new Date();
+      updatedAppointment.status = "deleted";
+      updatedAppointment.deleted = false;
+      updatedAppointment.deletedAt = deletedAt;
+      updates.status = "deleted";
+      updates.deleted = false;
+      updates.deletedAt = deletedAt;
+    } else if (shouldRestoreAppointment) {
+      updatedAppointment.status = "cancelled";
+      updatedAppointment.deleted = false;
+      updatedAppointment.deletedAt = null;
+      updates.status = "cancelled";
+      updates.deleted = false;
+      updates.deletedAt = updatedAppointment.deletedAt;
+    }
+
     if (isStaffRole(req) && isPatientCartStatus(updatedAppointment.status)) {
       return res.status(400).json({
         success: false,
@@ -1245,16 +1289,6 @@ export const updateAppointment = async (
       updates.balance = updatedAppointment.balance;
     }
 
-    if (
-      isDeletedAppointmentStatus(oldAppointment.status) &&
-      !isDeletedAppointmentStatus(updatedAppointment.status)
-    ) {
-      (updatedAppointment as any).deleted = false;
-      (updatedAppointment as any).deletedAt = null;
-      (updates as any).deleted = false;
-      (updates as any).deletedAt = null;
-    }
-
     const changedBy = (req as any).user?.id || (req as any).user?.username || "admin";
     const changedByName =
       (req as any).user?.name ||
@@ -1262,7 +1296,7 @@ export const updateAppointment = async (
       (changedBy === "admin" ? "Admin" : changedBy);
     await cancelOverlappingPendingAppointments(appointments, updatedAppointment, changedBy, changedByName, doctorStaff);
 
-    const oldStatus = normalizeStatus(oldAppointment.status);
+    const oldStatus = getAppointmentResponseStatus(oldAppointment);
     const oldPaymentStatus = oldAppointment.paymentStatus || "unpaid";
     const oldTotalPaidValue = derivedTotalPaid || 0;
     const newTotalPaidValue = updatedAppointment.totalPaid || 0;
@@ -1309,11 +1343,17 @@ export const updateAppointment = async (
       ? patientRecord
       : await getActivePatientIdentity(oldAppointment.patientId);
     const savedForNotifications = withResolvedDoctor(
-      withResolvedPatient(saved as any, patientRecord ? [patientRecord] : []),
+      withResolvedPatient(
+        { ...saved, status: getAppointmentResponseStatus(saved) } as any,
+        patientRecord ? [patientRecord] : []
+      ),
       doctorStaff
     ) as Appointment;
     const oldForNotifications = withResolvedDoctor(
-      withResolvedPatient(oldAppointment as any, oldPatientRecord ? [oldPatientRecord] : []),
+      withResolvedPatient(
+        { ...oldAppointment, status: getAppointmentResponseStatus(oldAppointment) } as any,
+        oldPatientRecord ? [oldPatientRecord] : []
+      ),
       doctorStaff
     ) as Appointment;
 
@@ -1392,7 +1432,7 @@ export const deleteAppointment = async (
       return res.status(404).json({ success: false, message: "Appointment not found" });
     }
 
-    if (isDeletedAppointmentStatus(appointment.status)) {
+    if (isSoftDeletedAppointment(appointment)) {
       if (!isAdminRole(req)) {
         return res.status(404).json({ success: false, message: "Appointment not found" });
       }
@@ -1450,19 +1490,22 @@ export const deleteAppointment = async (
 
     const deletedAppointment = toAppointment(await prisma.appointment.update({
       where: { id: appointmentId },
-      data: { status: "deleted", deleted: true, deletedAt: new Date(), updatedAt: new Date() },
+      data: { status: "deleted", deleted: false, deletedAt: new Date(), updatedAt: new Date() },
     }));
 
     if (appointment.id) {
       const patientRecord = await getActivePatientIdentity(appointment.patientId);
       const notificationAppointment = withResolvedDoctor(
-        withResolvedPatient(deletedAppointment as any, patientRecord ? [patientRecord] : []),
+        withResolvedPatient(
+          { ...deletedAppointment, status: getAppointmentResponseStatus(deletedAppointment) } as any,
+          patientRecord ? [patientRecord] : []
+        ),
         doctorStaff
       ) as Appointment;
       await notifyStatusChange(
         appointment.id,
         "status",
-        normalizeStatus(appointment.status),
+        getAppointmentResponseStatus(appointment),
         "deleted",
         await resolveRecipients(notificationAppointment),
         appointmentData(notificationAppointment)
@@ -1475,7 +1518,7 @@ export const deleteAppointment = async (
       message: "Appointment marked as deleted successfully",
       data: withResolvedDoctor(
         withResolvedPatient(
-          { ...deletedAppointment, status: normalizeStatus(deletedAppointment.status) },
+          { ...deletedAppointment, status: getAppointmentResponseStatus(deletedAppointment) },
           patientRecord ? [patientRecord] : []
         ),
         doctorStaff
@@ -1753,8 +1796,7 @@ export const fetchAppointmentLogs = async (req: Request<IdParams>, res: Response
     const appointment = await prisma.appointment.findUnique({ where: { id } });
     if (
       !appointment ||
-      appointment.deleted ||
-      (!isAdminRole(req) && isDeletedAppointmentStatus(appointment.status))
+      (!isAdminRole(req) && isSoftDeletedAppointment(appointment as Appointment))
     ) return res.status(404).json({ success: false, message: "Appointment not found" });
 
     const publicToken = String(req.query.publicToken || req.headers["x-public-token"] || "");
@@ -1811,8 +1853,7 @@ export const fetchPaymentLogs = async (req: Request<IdParams>, res: Response) =>
     const appointment = await prisma.appointment.findUnique({ where: { id } });
     if (
       !appointment ||
-      appointment.deleted ||
-      (!isAdminRole(req) && isDeletedAppointmentStatus(appointment.status))
+      (!isAdminRole(req) && isSoftDeletedAppointment(appointment as Appointment))
     ) return res.status(404).json({ success: false, message: "Appointment not found" });
 
     const publicToken = String(req.query.publicToken || req.headers["x-public-token"] || "");

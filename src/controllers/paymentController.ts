@@ -125,6 +125,26 @@ const shouldIncludeDeletedPayments = (req: Request): boolean => {
   return isAdminRole(req) && ["1", "true", "yes"].includes(includeDeleted);
 };
 
+const isDeletedAppointmentRecord = (appointment?: { deleted?: boolean | null; status?: string | null } | null): boolean => {
+  if (!appointment) return false;
+  if (Boolean(appointment.deleted)) return true;
+  return normalizeStatus(appointment.status) === "deleted";
+};
+
+const withPaymentDeletionMetadata = (payment: any, appointment?: any) => {
+  const appointmentDeleted = isDeletedAppointmentRecord(appointment);
+
+  return {
+    ...payment,
+    deleted: Boolean(payment?.deleted),
+    deletedAt: payment?.deletedAt || null,
+    paymentDeleted: Boolean(payment?.deleted),
+    paymentDeletedAt: payment?.deletedAt || null,
+    appointmentDeleted,
+    appointmentDeletedAt: appointmentDeleted ? appointment?.deletedAt || null : null,
+  };
+};
+
 const isCashPaymentMethod = (method: unknown): boolean =>
   String(method || "").trim().toLowerCase() === "cash";
 
@@ -631,7 +651,13 @@ export const getPaymentsByAppointment = async (
       where: { ...(includeDeleted ? {} : { deleted: false }), appointmentId: req.params.id },
       orderBy: { createdAt: "desc" },
     });
-    res.json({ success: true, data: await hydratePaymentSnapshots(payments) });
+    const appointment = await prisma.appointment.findUnique({ where: { id: req.params.id } });
+    const visiblePayments = payments.filter((payment) => {
+      if (!includeDeleted && (payment.deleted || isDeletedAppointmentRecord(appointment))) return false;
+      return true;
+    });
+    const mappedPayments = visiblePayments.map((payment) => withPaymentDeletionMetadata(payment, appointment));
+    res.json({ success: true, data: await hydratePaymentSnapshots(mappedPayments) });
   } catch (error) {
     console.error("[GET PAYMENTS] Error:", error);
     res.status(500).json({
@@ -652,7 +678,20 @@ export const getPaymentsByPatient = async (
       where: { ...(includeDeleted ? {} : { deleted: false }), patientId: req.params.id },
       orderBy: { createdAt: "desc" },
     });
-    res.json({ success: true, data: await hydratePaymentSnapshots(payments) });
+    const appointmentIds = Array.from(new Set(payments.map((payment) => payment.appointmentId).filter(Boolean)));
+    const appointments = appointmentIds.length > 0
+      ? await prisma.appointment.findMany({ where: { id: { in: appointmentIds } } })
+      : [];
+    const appointmentMap = new Map(appointments.map((appointment) => [appointment.id, appointment]));
+    const visiblePayments = payments.filter((payment) => {
+      const appointment = appointmentMap.get(payment.appointmentId);
+      if (!includeDeleted && (payment.deleted || isDeletedAppointmentRecord(appointment))) return false;
+      return true;
+    });
+    const mappedPayments = visiblePayments.map((payment) =>
+      withPaymentDeletionMetadata(payment, appointmentMap.get(payment.appointmentId))
+    );
+    res.json({ success: true, data: await hydratePaymentSnapshots(mappedPayments) });
   } catch (error) {
     console.error("[GET PAYMENTS PATIENT] Error:", error);
     res.status(500).json({
@@ -668,13 +707,19 @@ export const getPaymentById = async (
   res: Response<ApiResponse<Payment>>
 ) => {
   try {
+    const includeDeleted = shouldIncludeDeletedPayments(req);
     const normalizedPayment = await findPaymentOrMaterialize(req.params.id);
+    const appointment = normalizedPayment?.appointmentId
+      ? toAppointment(await prisma.appointment.findUnique({ where: { id: normalizedPayment.appointmentId } }))
+      : null;
 
-    if (!normalizedPayment || normalizedPayment.deleted) {
+    if (!normalizedPayment || (!includeDeleted && (normalizedPayment.deleted || isDeletedAppointmentRecord(appointment)))) {
       return res.status(404).json({ success: false, message: "Payment not found" });
     }
 
-    const [hydratedPayment] = await hydratePaymentSnapshots([normalizedPayment]);
+    const [hydratedPayment] = await hydratePaymentSnapshots([
+      withPaymentDeletionMetadata(normalizedPayment, appointment),
+    ]);
     res.json({ success: true, data: hydratedPayment });
   } catch (error) {
     console.error("[GET PAYMENT] Error:", error);

@@ -138,6 +138,12 @@ const canViewDeletedPaymentRows = (req: Request) => {
   return role === "admin" || role === "doctor";
 };
 
+const isDeletedAppointmentRecord = (appointment?: { deleted?: boolean | null; status?: string | null } | null) => {
+  if (!appointment) return false;
+  if (Boolean(appointment.deleted)) return true;
+  return String(appointment.status || "").trim().toLowerCase() === "deleted";
+};
+
 const SALARY_RECORD_TYPES = new Set(["salary", "payroll", "monthlysalary"]);
 const MANAGED_PAYROLL_ADJUSTMENT_TYPE = "payroll_adjustment";
 const PAYROLL_ADJUSTMENT_TYPES = new Set([
@@ -1781,6 +1787,10 @@ export const getRecentTransactions = async (
 
     const allPaymentTransactions = payments.map((payment) => {
       const currentAppointmentSnapshot = appointmentSnapshotById.get(payment.appointmentId);
+      const appointmentDeleted = isDeletedAppointmentRecord(currentAppointmentSnapshot);
+      const appointmentDeletedAt = appointmentDeleted ? toIsoDate(currentAppointmentSnapshot?.deletedAt) : "";
+      const paymentDeleted = Boolean(payment.deleted);
+      const paymentDeletedAt = toIsoDate(payment.deletedAt);
       const resolvedAppointment = resolveAppointmentForFinance(
         currentAppointmentSnapshot,
         (payment as any).appointmentSnapshot,
@@ -1818,13 +1828,19 @@ export const getRecentTransactions = async (
         createdAt: toIsoDate(payment.createdAt),
         updatedAt: toIsoDate(payment.updatedAt),
         source: "payment",
-        deleted: Boolean(payment.deleted),
-        deletedAt: toIsoDate(payment.deletedAt),
+        deleted: paymentDeleted,
+        deletedAt: paymentDeletedAt,
+        paymentDeleted,
+        paymentDeletedAt,
+        appointmentDeleted,
+        appointmentDeletedAt,
       };
     });
-    const paymentTransactions = canSeeDeletedPayments
-      ? allPaymentTransactions
-      : allPaymentTransactions.filter((transaction) => !transaction.deleted && !transaction.deletedAt);
+    const paymentTransactions = allPaymentTransactions.filter((transaction) => {
+      const shouldHideDeletedAppointmentRows =
+        (Boolean(transaction.deleted) || Boolean(transaction.appointmentDeleted)) && !canSeeDeletedPayments;
+      return !shouldHideDeletedAppointmentRows;
+    });
 
     const financeTransactions = financeRecords
       .filter((record) => isIncomeType(record.type) || isExpenseType(record.type))
@@ -1849,6 +1865,11 @@ export const getRecentTransactions = async (
           record.appointmentSnapshot,
           doctorStaff
         );
+        const appointmentDeleted = isDeletedAppointmentRecord(currentAppointmentSnapshot);
+        const appointmentDeletedAt = appointmentDeleted ? toIsoDate(currentAppointmentSnapshot?.deletedAt) : "";
+        if (appointmentDeleted && !canSeeDeletedPayments) {
+          return null;
+        }
 
         return {
           id: record.id,
@@ -1871,8 +1892,15 @@ export const getRecentTransactions = async (
           appointmentSnapshot: resolvedAppointment.appointmentSnapshot,
           logDate: record.createdAt ? toIsoDate(record.createdAt) : paymentDate,
           source: "finance-record",
+          deleted: false,
+          deletedAt: "",
+          paymentDeleted: false,
+          paymentDeletedAt: "",
+          appointmentDeleted,
+          appointmentDeletedAt,
         };
-      });
+      })
+      .filter(Boolean) as RecentTransaction[];
 
     const expenseTransactions = detailedExpenses
       .filter((expense) => normalizeExpenseStatus(expense.status) === "paid")
@@ -1891,7 +1919,8 @@ export const getRecentTransactions = async (
         };
       });
 
-    const data = [...paymentTransactions, ...financeTransactions, ...expenseTransactions]
+    const data = ([...paymentTransactions, ...financeTransactions, ...expenseTransactions] as Array<RecentTransaction | null>)
+      .filter((record): record is RecentTransaction => Boolean(record) && Boolean((record as RecentTransaction | null)?.id))
       .sort((a, b) => {
         const primaryDiff =
           getRecentTransactionPrimarySortTime(b) - getRecentTransactionPrimarySortTime(a);

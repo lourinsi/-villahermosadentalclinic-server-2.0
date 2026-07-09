@@ -30,6 +30,10 @@ export interface Payment {
   updatedAt?: Date;
   deleted?: boolean;
   deletedAt?: Date | null;
+  paymentDeleted?: boolean;
+  paymentDeletedAt?: Date | string | null;
+  appointmentDeleted?: boolean;
+  appointmentDeletedAt?: Date | string | null;
 }
 
 export interface ApiResponse<T> {

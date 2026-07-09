@@ -99,6 +99,10 @@ export interface RecentTransaction {
   currentPaymentStatus?: string | null;
   deleted?: boolean;
   deletedAt?: string | null;
+  paymentDeleted?: boolean;
+  paymentDeletedAt?: string | null;
+  appointmentDeleted?: boolean;
+  appointmentDeletedAt?: string | null;
   changedBy?: string;
   changedByName?: string;
   doctor?: string;

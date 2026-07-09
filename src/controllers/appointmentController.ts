@@ -1245,7 +1245,7 @@ export const updateAppointment = async (
     } else if (shouldRestoreAppointment) {
       updatedAppointment.status = "cancelled";
       updatedAppointment.deleted = false;
-      updatedAppointment.deletedAt = oldAppointment.deletedAt || updatedAppointment.deletedAt || null;
+      updatedAppointment.deletedAt = null;
       updates.status = "cancelled";
       updates.deleted = false;
       updates.deletedAt = updatedAppointment.deletedAt;

@@ -11,6 +11,7 @@ import {
   createDetailedExpense,
   updateDetailedExpense,
   deleteDetailedExpense,
+  restoreDetailedExpense,
   payDetailedExpense,
   getFinanceHistoryLogs,
   getRecurringExpenses,
@@ -59,6 +60,9 @@ router.patch("/detailed-expenses/:id", updateDetailedExpense);
 
 // POST - Mark a detailed expense paid
 router.post("/detailed-expenses/:id/pay", payDetailedExpense);
+
+// POST - Restore soft-deleted detailed expense and reapply linked stock if needed
+router.post("/detailed-expenses/:id/restore", restoreDetailedExpense);
 
 // DELETE - Soft delete detailed expense and reverse linked stock if needed
 router.delete("/detailed-expenses/:id", deleteDetailedExpense);

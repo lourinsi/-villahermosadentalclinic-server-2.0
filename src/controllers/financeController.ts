@@ -133,6 +133,16 @@ const normalizeExpenseStatus = (value?: unknown): ExpenseStatus => {
 const isCancelledExpense = (expense: { status?: string | null }) =>
   normalizeExpenseStatus(expense.status) === "cancelled";
 
+const canManageDetailedExpenses = (req: Request) => {
+  const role = String((req as any).user?.role || "").toLowerCase();
+  return role === "admin" || role === "receptionist";
+};
+
+const shouldIncludeDeletedDetailedExpenses = (req: Request) => {
+  const includeDeleted = String((req.query as any)?.includeDeleted || "").trim().toLowerCase();
+  return canManageDetailedExpenses(req) && ["1", "true", "yes"].includes(includeDeleted);
+};
+
 const canViewDeletedPaymentRows = (req: Request) => {
   const role = String((req as any).user?.role || "").toLowerCase();
   return role === "admin" || role === "doctor";
@@ -819,11 +829,10 @@ export const deleteDetailedExpense = async (
   res: Response<ApiResponse<null>>
 ) => {
   try {
-    const requesterRole = normalizeCodeValue((req as any).user?.role);
-    if (requesterRole !== "admin") {
+    if (!canManageDetailedExpenses(req)) {
       return res.status(403).json({
         success: false,
-        message: "Only admins can delete detailed expenses",
+        message: "Only admins and receptionists can delete detailed expenses",
       });
     }
 
@@ -885,6 +894,7 @@ export const deleteDetailedExpense = async (
         data: {
           deleted: true,
           deletedAt: new Date(),
+          updatedAt: new Date(),
         },
       });
 
@@ -917,6 +927,119 @@ export const deleteDetailedExpense = async (
     res.status(500).json({
       success: false,
       message: "Error deleting detailed expense",
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+};
+
+export const restoreDetailedExpense = async (
+  req: Request<IdParams>,
+  res: Response<ApiResponse<DetailedExpense | null>>
+) => {
+  try {
+    if (!canManageDetailedExpenses(req)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only admins and receptionists can restore detailed expenses",
+      });
+    }
+
+    const currentExpense = await prisma.detailedExpense.findUnique({
+      where: { id: req.params.id },
+    });
+
+    if (!currentExpense) {
+      return res.status(404).json({
+        success: false,
+        message: "Detailed expense not found",
+      });
+    }
+
+    if (!currentExpense.deleted) {
+      return res.json({
+        success: true,
+        message: "Detailed expense is already active",
+        data: buildDetailedExpenseResponse(currentExpense),
+      });
+    }
+
+    const actor = getFinanceHistoryActor(req);
+    const inventoryItemId = String(currentExpense.inventoryItemId || "").trim();
+    const inventoryQuantity = toFiniteNumber(currentExpense.inventoryQuantity);
+    const restoredAt = new Date();
+
+    const restoredExpense = await prisma.$transaction(async (tx) => {
+      if (inventoryItemId && inventoryQuantity > 0) {
+        const inventoryItem = await tx.inventoryItem.findUnique({
+          where: { id: inventoryItemId },
+        });
+
+        if (!inventoryItem || inventoryItem.deleted) {
+          throw new Error("Linked inventory item not found");
+        }
+
+        const currentQuantity = toFiniteNumber(inventoryItem.quantity);
+        const updatedQuantity = currentQuantity + inventoryQuantity;
+        const costPerUnit = toFiniteNumber(inventoryItem.costPerUnit);
+        const updatedInventoryItem = await tx.inventoryItem.update({
+          where: { id: inventoryItemId },
+          data: {
+            quantity: updatedQuantity,
+            totalValue: updatedQuantity * costPerUnit,
+            updatedAt: restoredAt,
+          },
+        });
+
+        await createFinanceHistoryLog(tx, {
+          entityType: "inventory",
+          entityId: inventoryItemId,
+          action: "stock_restored_from_expense_restore",
+          previousState: inventoryItem,
+          newState: updatedInventoryItem,
+          quantityChange: inventoryQuantity,
+          summary: `Stock restored from restored expense ${req.params.id}`,
+          ...actor,
+        });
+      }
+
+      const restoredExpense = await tx.detailedExpense.update({
+        where: { id: req.params.id },
+        data: {
+          deleted: false,
+          deletedAt: null,
+          updatedAt: restoredAt,
+        },
+      });
+
+      await createFinanceHistoryLog(tx, {
+        entityType: "expense",
+        entityId: req.params.id,
+        action: "restore",
+        previousState: currentExpense,
+        newState: restoredExpense,
+        amount: toFiniteNumber(restoredExpense.amount),
+        ...actor,
+      });
+
+      return restoredExpense;
+    });
+
+    res.json({
+      success: true,
+      message: "Detailed expense restored successfully",
+      data: buildDetailedExpenseResponse(restoredExpense),
+    });
+  } catch (error) {
+    console.error("[FINANCE RESTORE_DETAILED_EXPENSE] ERROR:", error);
+    if (error instanceof Error && error.message === "Linked inventory item not found") {
+      return res.status(400).json({
+        success: false,
+        message: "Linked inventory item not found",
+      });
+    }
+    res.status(500).json({
+      success: false,
+      message: "Error restoring detailed expense",
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }
@@ -1177,8 +1300,9 @@ export const getDetailedExpenses = async (
   res: Response<ApiResponse<DetailedExpense[]>>
 ) => {
   try {
+    const includeDeleted = shouldIncludeDeletedDetailedExpenses(req);
     const detailedExpenses = await prisma.detailedExpense.findMany({
-      where: activeDetailedExpenseWhere,
+      where: includeDeleted ? {} : activeDetailedExpenseWhere,
       orderBy: { date: "desc" },
     });
     const data = detailedExpenses.map(buildDetailedExpenseResponse);
@@ -1734,6 +1858,7 @@ export const getRecentTransactions = async (
   try {
     const includeDeletedQuery = String((req.query as Record<string, string | undefined>).includeDeleted || "").toLowerCase();
     const canSeeDeletedPayments = includeDeletedQuery === "true" && canViewDeletedPaymentRows(req);
+    const canSeeDeletedExpenses = includeDeletedQuery === "true" && canManageDetailedExpenses(req);
     const requestedLimit = Number((req.query as Record<string, string | undefined>).limit || 25);
     const resultLimit = Math.max(1, Math.min(1000, Number.isFinite(requestedLimit) ? requestedLimit : 25));
     const sourceLimit = Math.min(5000, Math.max(100, resultLimit * 6));
@@ -1744,7 +1869,7 @@ export const getRecentTransactions = async (
         take: sourceLimit,
       }),
       prisma.detailedExpense.findMany({
-        where: activeDetailedExpenseWhere,
+        where: canSeeDeletedExpenses ? {} : activeDetailedExpenseWhere,
         orderBy: { date: "desc" },
         take: sourceLimit,
       }),
@@ -1906,6 +2031,8 @@ export const getRecentTransactions = async (
       .filter((expense) => normalizeExpenseStatus(expense.status) === "paid")
       .map((expense) => {
         const paymentDate = expense.paymentDate || expense.date;
+        const expenseDeleted = Boolean(expense.deleted);
+        const expenseDeletedAt = toIsoDate(expense.deletedAt);
 
         return {
           id: expense.id,
@@ -1916,6 +2043,12 @@ export const getRecentTransactions = async (
           method: normalizeMethod(expense.paymentMethod),
           logDate: paymentDate,
           source: "expense",
+          deleted: expenseDeleted,
+          deletedAt: expenseDeletedAt,
+          paymentDeleted: false,
+          paymentDeletedAt: "",
+          appointmentDeleted: false,
+          appointmentDeletedAt: "",
         };
       });
 

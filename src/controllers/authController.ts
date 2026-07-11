@@ -371,34 +371,72 @@ export const verifyToken = async (
   req: express.Request,
   res: express.Response
 ): Promise<void> => {
-  try {
-    const token = req.cookies.authToken || req.headers.authorization?.split(" ")[1];
+  const token = req.cookies.authToken || req.headers.authorization?.split(" ")[1];
 
-    if (!token) {
+  if (!token) {
+    res.status(401).json({
+      success: false,
+      message: "No token provided",
+    });
+    return;
+  }
+
+  let decoded: any;
+
+  try {
+    decoded = jwt.verify(token, JWT_SECRET) as any;
+  } catch (error) {
+    if (
+      error instanceof jwt.JsonWebTokenError ||
+      error instanceof jwt.TokenExpiredError ||
+      error instanceof jwt.NotBeforeError
+    ) {
       res.status(401).json({
         success: false,
-        message: "No token provided",
+        message: "Invalid or expired token",
       });
       return;
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    console.error("[AUTH] Unexpected token verification error:", error);
+    res.status(503).json({
+      success: false,
+      message: "Authentication service is temporarily unavailable",
+    });
+    return;
+  }
+
+  try {
     let user = decoded;
 
-    if (isStaffRole(decoded?.role) && decoded?.staffId) {
+    if (isStaffRole(decoded?.role)) {
+      if (!decoded?.staffId) {
+        res.status(401).json({
+          success: false,
+          message: "Invalid or expired token",
+        });
+        return;
+      }
+
       const staff = await prisma.staff.findFirst({
         where: { id: String(decoded.staffId), deleted: false },
       });
 
-      if (staff) {
-        user = {
-          ...decoded,
-          username: staff.name,
-          name: staff.name,
-          staffId: staff.id,
-          mustChangePassword: await isUsingDefaultStaffPassword(staff.password),
-        };
+      if (!staff) {
+        res.status(401).json({
+          success: false,
+          message: "Invalid or expired token",
+        });
+        return;
       }
+
+      user = {
+        ...decoded,
+        username: staff.name,
+        name: staff.name,
+        staffId: staff.id,
+        mustChangePassword: await isUsingDefaultStaffPassword(staff.password),
+      };
     }
 
     res.status(200).json({
@@ -407,10 +445,10 @@ export const verifyToken = async (
       user,
     });
   } catch (error) {
-    console.error("[AUTH] Token verification error:", error);
-    res.status(401).json({
+    console.error("[AUTH] Session validation error:", error);
+    res.status(503).json({
       success: false,
-      message: "Invalid or expired token",
+      message: "Authentication service is temporarily unavailable",
     });
   }
 };

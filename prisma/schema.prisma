@@ -286,7 +286,10 @@ model DetailedExpense {
   date          String
   category      String
   description   String
+  price         Float?
   amount        Float
+  totalPaid     Float?  @default(0)
+  balance       Float?
   vendor        String?
   paymentMethod String?
   paymentDate   String?

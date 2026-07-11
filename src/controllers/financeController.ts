@@ -121,10 +121,12 @@ const nextMonthlyDueDate = (dateValue: string) => {
 const normalizeCodeValue = (value?: string | null) =>
   String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
-type ExpenseStatus = "pending" | "paid" | "cancelled";
+type ExpenseStatus = "pending" | "partial" | "paid" | "overpaid" | "cancelled";
 
 const normalizeExpenseStatus = (value?: unknown): ExpenseStatus => {
   const normalized = normalizeCodeValue(String(value || ""));
+  if (["partial", "partiallypaid", "partpaid", "halfpaid"].includes(normalized)) return "partial";
+  if (["overpaid", "overpayment"].includes(normalized)) return "overpaid";
   if (["paid", "settled", "complete", "completed"].includes(normalized)) return "paid";
   if (["cancelled", "canceled", "void", "voided"].includes(normalized)) return "cancelled";
   return "pending";
@@ -132,6 +134,26 @@ const normalizeExpenseStatus = (value?: unknown): ExpenseStatus => {
 
 const isCancelledExpense = (expense: { status?: string | null }) =>
   normalizeExpenseStatus(expense.status) === "cancelled";
+
+const hasOwnField = (record: Record<string, unknown>, key: string) =>
+  Object.prototype.hasOwnProperty.call(record, key);
+
+const getExpensePrice = (expense: { price?: unknown; amount?: unknown }) =>
+  Math.max(0, toFiniteNumber(expense.price ?? expense.amount));
+
+const getExpenseTotalPaid = (expense: { totalPaid?: unknown; amount?: unknown; status?: unknown }) => {
+  if (expense.totalPaid !== undefined && expense.totalPaid !== null) return Math.max(0, toFiniteNumber(expense.totalPaid));
+  return ["paid", "partial", "overpaid"].includes(normalizeExpenseStatus(expense.status))
+    ? Math.max(0, toFiniteNumber(expense.amount))
+    : 0;
+};
+
+const getExpensePaymentStatus = (price: number, totalPaid: number): ExpenseStatus => {
+  if (totalPaid > price + 0.01) return "overpaid";
+  if (totalPaid >= price - 0.01 && price > 0) return "paid";
+  if (totalPaid > 0) return "partial";
+  return "pending";
+};
 
 const canManageDetailedExpenses = (req: Request) => {
   const role = String((req as any).user?.role || "").toLowerCase();
@@ -345,10 +367,15 @@ const buildFinanceHistoryResponse = (log: any): FinanceHistoryLog => ({
 
 const buildDetailedExpenseResponse = (expense: any): DetailedExpense => ({
   ...toDetailedExpense(expense),
-  amount: toFiniteNumber(expense.amount),
+  price: getExpensePrice(expense),
+  amount: getExpenseTotalPaid(expense),
+  totalPaid: getExpenseTotalPaid(expense),
+  balance: expense.balance !== undefined && expense.balance !== null
+    ? toFiniteNumber(expense.balance)
+    : getExpensePrice(expense) - getExpenseTotalPaid(expense),
   vendor: expense.vendor || "",
   paymentMethod: expense.paymentMethod || "",
-  status: normalizeExpenseStatus(expense.status),
+  status: isCancelledExpense(expense) ? "cancelled" : getExpensePaymentStatus(getExpensePrice(expense), getExpenseTotalPaid(expense)),
   paymentDate: expense.paymentDate || undefined,
   createdAt: toIsoDate(expense.createdAt),
   updatedAt: toIsoDate(expense.updatedAt),
@@ -451,11 +478,20 @@ export const createDetailedExpense = async (
 ) => {
   try {
     const expenseData: DetailedExpense = req.body;
+    const expenseRequest = (req.body || {}) as Record<string, unknown>;
+    const price = getExpensePrice(expenseData);
+    const totalPaid = hasOwnField(expenseRequest, "totalPaid")
+      ? Math.max(0, toFiniteNumber(expenseData.totalPaid))
+      : hasOwnField(expenseRequest, "price")
+        ? Math.max(0, toFiniteNumber(expenseData.amount))
+        : normalizeExpenseStatus(expenseData.status) === "paid"
+          ? Math.max(0, toFiniteNumber(expenseData.amount))
+          : 0;
 
-    if (!expenseData.category || !expenseData.description || !expenseData.amount || !expenseData.date) {
+    if (!expenseData.category || !expenseData.description || price <= 0 || !expenseData.date) {
       return res.status(400).json({
         success: false,
-        message: "Missing required fields: category, description, amount, date",
+        message: "Missing required fields: category, description, price, date",
       });
     }
 
@@ -470,9 +506,10 @@ export const createDetailedExpense = async (
 
     const requesterRole = normalizeCodeValue((req as any).user?.role);
     const canSetInitialExpenseStatus = requesterRole === "admin";
-    const initialExpenseStatus = canSetInitialExpenseStatus
-      ? normalizeExpenseStatus(expenseData.status)
-      : "pending";
+    const requestedStatus = normalizeExpenseStatus(expenseData.status);
+    const initialExpenseStatus = canSetInitialExpenseStatus && requestedStatus === "cancelled"
+      ? "cancelled"
+      : getExpensePaymentStatus(price, totalPaid);
 
     if (inventoryItemId && initialExpenseStatus === "cancelled") {
       return res.status(400).json({
@@ -486,13 +523,16 @@ export const createDetailedExpense = async (
       date: expenseData.date,
       category: expenseData.category,
       description: expenseData.description,
-      amount: Number(expenseData.amount),
+      price,
+      amount: totalPaid,
+      totalPaid,
+      balance: price - totalPaid,
       vendor: expenseData.vendor || "",
       paymentMethod:
-        initialExpenseStatus === "paid"
+        totalPaid > 0
           ? expenseData.paymentMethod || "cash"
           : expenseData.paymentMethod || "",
-      paymentDate: initialExpenseStatus === "paid" ? expenseData.date : null,
+      paymentDate: totalPaid > 0 ? dateOnlyKey(expenseData.paymentDate) || expenseData.date : null,
       status: initialExpenseStatus,
       recurring: Boolean(expenseData.recurring),
       createdAt: new Date(),
@@ -594,10 +634,22 @@ export const updateDetailedExpense = async (
     }
 
     const updates: Partial<DetailedExpense> = req.body;
-    if (updates.amount !== undefined && toFiniteNumber(updates.amount) <= 0) {
+    const updateRequest = (req.body || {}) as Record<string, unknown>;
+    const hasPriceUpdate = hasOwnField(updateRequest, "price");
+    const hasTotalPaidUpdate = hasOwnField(updateRequest, "totalPaid");
+    const currentPrice = getExpensePrice(currentExpense);
+    const currentTotalPaid = getExpenseTotalPaid(currentExpense);
+    const nextPrice = hasPriceUpdate ? Math.max(0, toFiniteNumber(updates.price)) : currentPrice;
+    const nextTotalPaid = hasTotalPaidUpdate
+      ? Math.max(0, toFiniteNumber(updates.totalPaid))
+      : hasPriceUpdate && hasOwnField(updateRequest, "amount")
+        ? Math.max(0, toFiniteNumber(updates.amount))
+        : currentTotalPaid;
+
+    if (nextPrice <= 0) {
       return res.status(400).json({
         success: false,
-        message: "Amount must be greater than zero",
+        message: "Total price must be greater than zero",
       });
     }
 
@@ -615,11 +667,14 @@ export const updateDetailedExpense = async (
     const canUpdateExpenseStatus = requesterRole === "admin";
     const hasStatusUpdate =
       canUpdateExpenseStatus && Object.prototype.hasOwnProperty.call(updates, "status");
-    const nextExpenseStatus = hasStatusUpdate
-      ? normalizeExpenseStatus(updates.status)
-      : currentExpenseStatus;
+    const requestedStatus = hasStatusUpdate ? normalizeExpenseStatus(updates.status) : currentExpenseStatus;
+    const nextExpenseStatus = requestedStatus === "cancelled"
+      ? "cancelled"
+      : getExpensePaymentStatus(nextPrice, nextTotalPaid);
     const shouldUpdatePaymentDate =
-      hasStatusUpdate && currentExpenseStatus !== nextExpenseStatus;
+      currentTotalPaid !== nextTotalPaid ||
+      currentExpenseStatus !== nextExpenseStatus ||
+      hasOwnField(updateRequest, "paymentDate");
 
     if (nextInventoryItemId && nextInventoryQuantity <= 0) {
       return res.status(400).json({
@@ -639,14 +694,17 @@ export const updateDetailedExpense = async (
       ...(updates.date !== undefined && { date: updates.date }),
       ...(updates.category !== undefined && { category: updates.category }),
       ...(updates.description !== undefined && { description: updates.description }),
-      ...(updates.amount !== undefined && { amount: Number(updates.amount) }),
+      price: nextPrice,
+      amount: nextTotalPaid,
+      totalPaid: nextTotalPaid,
+      balance: nextPrice - nextTotalPaid,
       ...(updates.vendor !== undefined && { vendor: updates.vendor || "" }),
       ...(updates.paymentMethod !== undefined && { paymentMethod: updates.paymentMethod || "" }),
-      ...(hasStatusUpdate && { status: nextExpenseStatus }),
+      status: nextExpenseStatus,
       ...(shouldUpdatePaymentDate && {
         paymentDate:
-          nextExpenseStatus === "paid"
-            ? currentExpense.paymentDate || dateKey(new Date())
+          nextTotalPaid > 0
+            ? String(updates.paymentDate || currentExpense.paymentDate || updates.date || dateKey(new Date()))
             : null,
       }),
       ...(updates.recurring !== undefined && { recurring: Boolean(updates.recurring) }),
@@ -782,14 +840,35 @@ export const payDetailedExpense = async (
     }
 
     const paymentMethod = String(req.body?.paymentMethod || currentExpense.paymentMethod || "cash").trim();
-    const paymentDate = String(currentExpense.paymentDate || "").trim() || dateKey(new Date());
+    const paymentAmount = Math.max(0, toFiniteNumber(req.body?.paymentAmount ?? req.body?.amount));
+    if (paymentAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment amount must be greater than zero",
+      });
+    }
+
+    const currentPrice = getExpensePrice(currentExpense);
+    const requestedPrice = req.body?.price;
+    const nextPrice = requestedPrice !== undefined && toFiniteNumber(requestedPrice) > 0
+      ? toFiniteNumber(requestedPrice)
+      : currentPrice;
+    const currentTotalPaid = getExpenseTotalPaid(currentExpense);
+    const nextTotalPaid = currentTotalPaid + paymentAmount;
+    const nextBalance = nextPrice - nextTotalPaid;
+    const nextStatus = getExpensePaymentStatus(nextPrice, nextTotalPaid);
+    const paymentDate = dateOnlyKey(req.body?.paymentDate) || dateKey(new Date());
     const actor = getFinanceHistoryActor(req);
     const updatedExpense = toDetailedExpense(
       await prisma.$transaction(async (tx) => {
         const paidExpense = await tx.detailedExpense.update({
           where: { id: req.params.id },
           data: {
-            status: "paid",
+            price: nextPrice,
+            amount: nextTotalPaid,
+            totalPaid: nextTotalPaid,
+            balance: nextBalance,
+            status: nextStatus,
             paymentMethod: paymentMethod || "cash",
             paymentDate,
           },
@@ -801,7 +880,8 @@ export const payDetailedExpense = async (
           action: "pay",
           previousState: currentExpense,
           newState: paidExpense,
-          amount: toFiniteNumber(paidExpense.amount),
+          amount: paymentAmount,
+          summary: `Expense payment of ${paymentAmount} recorded`,
           ...actor,
         });
 
@@ -1218,7 +1298,7 @@ export const getRevenue = async (req: Request, res: Response<ApiResponse<Revenue
       if (!date) continue;
 
       const total = totals.get(monthKey(date));
-      if (total) total.expenses += toFiniteNumber(expense.amount);
+      if (total) total.expenses += getExpenseTotalPaid(expense);
     }
 
     for (const staff of activeStaff) {
@@ -1267,7 +1347,7 @@ export const getExpenseBreakdown = async (
     for (const expense of detailedExpenses) {
       if (isCancelledExpense(expense)) continue;
       const category = String(expense.category || "Other").trim() || "Other";
-      categoryTotals.set(category, (categoryTotals.get(category) || 0) + toFiniteNumber(expense.amount));
+      categoryTotals.set(category, (categoryTotals.get(category) || 0) + getExpenseTotalPaid(expense));
     }
 
     const payrollTotal = activeStaff.reduce(
@@ -2028,7 +2108,7 @@ export const getRecentTransactions = async (
       .filter(Boolean) as RecentTransaction[];
 
     const expenseTransactions = detailedExpenses
-      .filter((expense) => normalizeExpenseStatus(expense.status) === "paid")
+      .filter((expense) => ["partial", "paid", "overpaid"].includes(normalizeExpenseStatus(expense.status)))
       .map((expense) => {
         const paymentDate = expense.paymentDate || expense.date;
         const expenseDeleted = Boolean(expense.deleted);
@@ -2038,7 +2118,7 @@ export const getRecentTransactions = async (
           id: expense.id,
           date: paymentDate,
           description: expense.description,
-          amount: -Math.abs(toFiniteNumber(expense.amount)),
+          amount: -Math.abs(getExpenseTotalPaid(expense)),
           type: "expense",
           method: normalizeMethod(expense.paymentMethod),
           logDate: paymentDate,

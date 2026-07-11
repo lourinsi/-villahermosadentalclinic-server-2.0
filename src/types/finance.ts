@@ -31,7 +31,10 @@ export interface DetailedExpense {
   date: string;
   category: string;
   description: string;
+  price?: number;
   amount: number;
+  totalPaid?: number;
+  balance?: number;
   vendor: string;
   paymentMethod: string;
   paymentDate?: string;

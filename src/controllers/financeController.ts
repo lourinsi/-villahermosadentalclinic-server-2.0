@@ -377,6 +377,7 @@ const buildDetailedExpenseResponse = (expense: any): DetailedExpense => ({
   paymentMethod: expense.paymentMethod || "",
   status: isCancelledExpense(expense) ? "cancelled" : getExpensePaymentStatus(getExpensePrice(expense), getExpenseTotalPaid(expense)),
   paymentDate: expense.paymentDate || undefined,
+  paymentCount: Number(expense._count?.payments) || 0,
   createdAt: toIsoDate(expense.createdAt),
   updatedAt: toIsoDate(expense.updatedAt),
   deleted: Boolean(expense.deleted),
@@ -480,13 +481,8 @@ export const createDetailedExpense = async (
     const expenseData: DetailedExpense = req.body;
     const expenseRequest = (req.body || {}) as Record<string, unknown>;
     const price = getExpensePrice(expenseData);
-    const totalPaid = hasOwnField(expenseRequest, "totalPaid")
-      ? Math.max(0, toFiniteNumber(expenseData.totalPaid))
-      : hasOwnField(expenseRequest, "price")
-        ? Math.max(0, toFiniteNumber(expenseData.amount))
-        : normalizeExpenseStatus(expenseData.status) === "paid"
-          ? Math.max(0, toFiniteNumber(expenseData.amount))
-          : 0;
+    // A detailed expense is the bill. Payments are separate child records.
+    const totalPaid = 0;
 
     if (!expenseData.category || !expenseData.description || price <= 0 || !expenseData.date) {
       return res.status(400).json({
@@ -528,11 +524,8 @@ export const createDetailedExpense = async (
       totalPaid,
       balance: price - totalPaid,
       vendor: expenseData.vendor || "",
-      paymentMethod:
-        totalPaid > 0
-          ? expenseData.paymentMethod || "cash"
-          : expenseData.paymentMethod || "",
-      paymentDate: totalPaid > 0 ? dateOnlyKey(expenseData.paymentDate) || expenseData.date : null,
+      paymentMethod: "",
+      paymentDate: null,
       status: initialExpenseStatus,
       recurring: Boolean(expenseData.recurring),
       createdAt: new Date(),
@@ -635,16 +628,19 @@ export const updateDetailedExpense = async (
 
     const updates: Partial<DetailedExpense> = req.body;
     const updateRequest = (req.body || {}) as Record<string, unknown>;
+    const paymentOwnedFields = ["amount", "totalPaid", "balance", "paymentMethod", "paymentDate"];
+    const attemptedPaymentUpdate = paymentOwnedFields.filter((field) => hasOwnField(updateRequest, field));
+    if (attemptedPaymentUpdate.length) {
+      return res.status(400).json({
+        success: false,
+        message: `Expense payments must be managed separately; remove: ${attemptedPaymentUpdate.join(", ")}`,
+      });
+    }
     const hasPriceUpdate = hasOwnField(updateRequest, "price");
-    const hasTotalPaidUpdate = hasOwnField(updateRequest, "totalPaid");
     const currentPrice = getExpensePrice(currentExpense);
     const currentTotalPaid = getExpenseTotalPaid(currentExpense);
     const nextPrice = hasPriceUpdate ? Math.max(0, toFiniteNumber(updates.price)) : currentPrice;
-    const nextTotalPaid = hasTotalPaidUpdate
-      ? Math.max(0, toFiniteNumber(updates.totalPaid))
-      : hasPriceUpdate && hasOwnField(updateRequest, "amount")
-        ? Math.max(0, toFiniteNumber(updates.amount))
-        : currentTotalPaid;
+    const nextTotalPaid = currentTotalPaid;
 
     if (nextPrice <= 0) {
       return res.status(400).json({
@@ -668,13 +664,15 @@ export const updateDetailedExpense = async (
     const hasStatusUpdate =
       canUpdateExpenseStatus && Object.prototype.hasOwnProperty.call(updates, "status");
     const requestedStatus = hasStatusUpdate ? normalizeExpenseStatus(updates.status) : currentExpenseStatus;
+    if (requestedStatus === "cancelled" && currentTotalPaid > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "An expense with active payments cannot be cancelled; delete or reverse its payments first",
+      });
+    }
     const nextExpenseStatus = requestedStatus === "cancelled"
       ? "cancelled"
       : getExpensePaymentStatus(nextPrice, nextTotalPaid);
-    const shouldUpdatePaymentDate =
-      currentTotalPaid !== nextTotalPaid ||
-      currentExpenseStatus !== nextExpenseStatus ||
-      hasOwnField(updateRequest, "paymentDate");
 
     if (nextInventoryItemId && nextInventoryQuantity <= 0) {
       return res.status(400).json({
@@ -699,14 +697,7 @@ export const updateDetailedExpense = async (
       totalPaid: nextTotalPaid,
       balance: nextPrice - nextTotalPaid,
       ...(updates.vendor !== undefined && { vendor: updates.vendor || "" }),
-      ...(updates.paymentMethod !== undefined && { paymentMethod: updates.paymentMethod || "" }),
       status: nextExpenseStatus,
-      ...(shouldUpdatePaymentDate && {
-        paymentDate:
-          nextTotalPaid > 0
-            ? String(updates.paymentDate || currentExpense.paymentDate || updates.date || dateKey(new Date()))
-            : null,
-      }),
       ...(updates.recurring !== undefined && { recurring: Boolean(updates.recurring) }),
       ...(hasInventoryLinkUpdate && {
         inventoryItemId: nextInventoryItemId || null,
@@ -1253,9 +1244,9 @@ export const deleteFinanceRecord = async (
 
 export const getRevenue = async (req: Request, res: Response<ApiResponse<Revenue[]>>) => {
   try {
-    const [financeRecords, detailedExpenses, activeStaff] = await Promise.all([
+    const [financeRecords, expensePayments, activeStaff] = await Promise.all([
       prisma.financeRecord.findMany({ where: { deleted: false } }),
-      prisma.detailedExpense.findMany({ where: activeDetailedExpenseWhere }),
+      prisma.expensePayment.findMany({ where: { deleted: false, expense: { deleted: false } }, include: { expense: true } }),
       prisma.staff.findMany({ where: { deleted: false } }),
     ]);
 
@@ -1292,13 +1283,13 @@ export const getRevenue = async (req: Request, res: Response<ApiResponse<Revenue
       }
     }
 
-    for (const expense of detailedExpenses) {
-      if (isCancelledExpense(expense)) continue;
-      const date = normalizeDate(expense.date);
+    for (const payment of expensePayments) {
+      if (isCancelledExpense(payment.expense)) continue;
+      const date = normalizeDate(payment.paymentDate);
       if (!date) continue;
 
       const total = totals.get(monthKey(date));
-      if (total) total.expenses += getExpenseTotalPaid(expense);
+      if (total) total.expenses += toFiniteNumber(payment.amount);
     }
 
     for (const staff of activeStaff) {
@@ -1337,17 +1328,17 @@ export const getExpenseBreakdown = async (
   res: Response<ApiResponse<ExpenseBreakdown[]>>
 ) => {
   try {
-    const [detailedExpenses, activeStaff] = await Promise.all([
-      prisma.detailedExpense.findMany({ where: activeDetailedExpenseWhere }),
+    const [expensePayments, activeStaff] = await Promise.all([
+      prisma.expensePayment.findMany({ where: { deleted: false, expense: { deleted: false } }, include: { expense: true } }),
       prisma.staff.findMany({ where: { deleted: false } }),
     ]);
 
     const categoryTotals = new Map<string, number>();
 
-    for (const expense of detailedExpenses) {
-      if (isCancelledExpense(expense)) continue;
-      const category = String(expense.category || "Other").trim() || "Other";
-      categoryTotals.set(category, (categoryTotals.get(category) || 0) + getExpenseTotalPaid(expense));
+    for (const payment of expensePayments) {
+      if (isCancelledExpense(payment.expense)) continue;
+      const category = String(payment.expense.category || "Other").trim() || "Other";
+      categoryTotals.set(category, (categoryTotals.get(category) || 0) + toFiniteNumber(payment.amount));
     }
 
     const payrollTotal = activeStaff.reduce(
@@ -1383,6 +1374,7 @@ export const getDetailedExpenses = async (
     const includeDeleted = shouldIncludeDeletedDetailedExpenses(req);
     const detailedExpenses = await prisma.detailedExpense.findMany({
       where: includeDeleted ? {} : activeDetailedExpenseWhere,
+      include: { _count: { select: { payments: { where: { deleted: false } } } } },
       orderBy: { date: "desc" },
     });
     const data = detailedExpenses.map(buildDetailedExpenseResponse);
@@ -1942,7 +1934,7 @@ export const getRecentTransactions = async (
     const requestedLimit = Number((req.query as Record<string, string | undefined>).limit || 25);
     const resultLimit = Math.max(1, Math.min(1000, Number.isFinite(requestedLimit) ? requestedLimit : 25));
     const sourceLimit = Math.min(5000, Math.max(100, resultLimit * 6));
-    const [financeRecords, detailedExpenses, payments, doctorStaff] = await Promise.all([
+    const [financeRecords, detailedExpenses, payments, expensePayments, doctorStaff] = await Promise.all([
       prisma.financeRecord.findMany({
         where: { deleted: false },
         orderBy: { date: "desc" },
@@ -1955,6 +1947,12 @@ export const getRecentTransactions = async (
       }),
       prisma.payment.findMany({
         orderBy: { date: "desc" },
+        take: sourceLimit,
+      }),
+      prisma.expensePayment.findMany({
+        where: canSeeDeletedExpenses ? {} : { expense: { deleted: false } },
+        include: { expense: true },
+        orderBy: { paymentDate: "desc" },
         take: sourceLimit,
       }),
       getActiveDoctorStaff(),
@@ -2107,26 +2105,36 @@ export const getRecentTransactions = async (
       })
       .filter(Boolean) as RecentTransaction[];
 
-    const expenseTransactions = detailedExpenses
-      .filter((expense) => ["partial", "paid", "overpaid"].includes(normalizeExpenseStatus(expense.status)))
-      .map((expense) => {
-        const paymentDate = expense.paymentDate || expense.date;
+    const expenseTransactions = expensePayments
+      .filter((payment) => !payment.deleted || canSeeDeletedExpenses)
+      .filter((payment) => !isCancelledExpense(payment.expense))
+      .map((payment) => {
+        const paymentDate = payment.paymentDate;
+        const expense = payment.expense;
         const expenseDeleted = Boolean(expense.deleted);
         const expenseDeletedAt = toIsoDate(expense.deletedAt);
 
         return {
-          id: expense.id,
+          id: payment.id,
           date: paymentDate,
+          paymentDate,
           description: expense.description,
-          amount: -Math.abs(getExpenseTotalPaid(expense)),
+          amount: -Math.abs(toFiniteNumber(payment.amount)),
+          paymentAmount: toFiniteNumber(payment.amount),
           type: "expense",
-          method: normalizeMethod(expense.paymentMethod),
-          logDate: paymentDate,
-          source: "expense",
-          deleted: expenseDeleted,
-          deletedAt: expenseDeletedAt,
-          paymentDeleted: false,
-          paymentDeletedAt: "",
+          method: normalizeMethod(payment.method),
+          logDate: toIsoDate(payment.createdAt) || paymentDate,
+          source: "expense-payment",
+          expenseId: expense.id,
+          expensePaymentId: payment.id,
+          paymentId: payment.id,
+          paymentRecordId: payment.id,
+          transactionId: payment.transactionId || undefined,
+          notes: payment.notes || undefined,
+          deleted: Boolean(payment.deleted) || expenseDeleted,
+          deletedAt: toIsoDate(payment.deletedAt) || expenseDeletedAt,
+          paymentDeleted: Boolean(payment.deleted),
+          paymentDeletedAt: toIsoDate(payment.deletedAt),
           appointmentDeleted: false,
           appointmentDeletedAt: "",
         };

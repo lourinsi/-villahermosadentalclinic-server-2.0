@@ -301,6 +301,7 @@ model DetailedExpense {
   deletedAt     DateTime?
   inventoryItemId   String?
   inventoryQuantity Float?
+  payments      ExpensePayment[]
 
   @@index([category])
   @@index([category, date])
@@ -311,6 +312,55 @@ model DetailedExpense {
   @@index([inventoryItemId])
   @@index([deleted])
   @@map("detailed_expenses")
+}
+
+model ExpensePayment {
+  id                  String    @id
+  expenseId           String
+  expense             DetailedExpense @relation(fields: [expenseId], references: [id], onDelete: Restrict)
+  amount              Float
+  method              String
+  paymentDate         String
+  transactionId       String?   @unique
+  notes               String?
+  idempotencyKey      String?   @unique
+  recordedBy          String
+  recordedByName      String?
+  recordedByRole      String?
+  expenseSnapshot     Json?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  deleted             Boolean   @default(false)
+  deletedAt           DateTime?
+  deletedBy           String?
+  deletedByName       String?
+  deletedByRole       String?
+  logs                ExpensePaymentLog[]
+
+  @@index([expenseId, paymentDate])
+  @@index([expenseId, deleted])
+  @@index([paymentDate])
+  @@map("expense_payments")
+}
+
+model ExpensePaymentLog {
+  id              String   @id
+  paymentId       String
+  payment         ExpensePayment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  expenseId       String
+  changeType      String
+  previousState   Json
+  newState        Json
+  changedBy       String
+  changedByName   String?
+  changedByRole   String?
+  changedAt       DateTime @default(now())
+  amountDelta     Float?
+  notes           String?
+
+  @@index([paymentId, changedAt])
+  @@index([expenseId, changedAt])
+  @@map("expense_payment_logs")
 }
 
 model InventoryItem {

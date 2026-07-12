@@ -9,6 +9,7 @@ export type ExpensePaymentInput = {
   date?: unknown;
   transactionId?: unknown;
   notes?: unknown;
+  origin?: unknown;
   idempotencyKey?: unknown;
   overpaymentPolicy?: "allow" | "increase_expense_price";
   adjustedPrice?: unknown;
@@ -30,6 +31,23 @@ const dateOnly = (value: unknown) => {
 const json = (value: unknown) => JSON.parse(JSON.stringify(value ?? {}));
 const actorData = (actor: ExpensePaymentActor) => ({
   recordedBy: actor.id || "system", recordedByName: actor.name || null, recordedByRole: actor.role || null,
+});
+
+/**
+ * Parent expense history keeps its aggregate projection, while embedding the
+ * exact child payment state that caused the projection to change. This makes a
+ * payment create/edit/delete/restore audit entry independently intelligible.
+ */
+const paymentAuditState = (expense: any, payment?: any | null, origin?: string) => ({
+  ...json(expense),
+  paymentId: payment?.id || null,
+  paymentAmount: payment?.amount ?? null,
+  paymentMethod: payment?.method ?? null,
+  paymentDate: payment?.paymentDate ?? null,
+  paymentReference: payment?.transactionId ?? null,
+  paymentNotes: payment?.notes ?? null,
+  paymentState: payment ? (payment.deleted ? "deleted" : "active") : "not_recorded",
+  ...(origin ? { paymentOrigin: origin } : {}),
 });
 
 const projectExpense = async (tx: any, expenseId: string) => {
@@ -67,6 +85,7 @@ const transaction = <T>(fn: (tx: any) => Promise<T>) => prisma.$transaction(fn, 
 
 export const createExpensePayment = (expenseId: string, input: ExpensePaymentInput, actor: ExpensePaymentActor) => transaction(async tx => {
   const amount = money(input.amount);
+  const origin = text(input.origin) === "initial_expense_creation" ? "initial_expense_creation" : "";
   if (!Number.isFinite(amount) || amount <= 0) throw new ExpensePaymentError(400, "Payment amount must be greater than zero");
   const idempotencyKey = text(input.idempotencyKey) || null;
   if (idempotencyKey) {
@@ -93,7 +112,7 @@ export const createExpensePayment = (expenseId: string, input: ExpensePaymentInp
   }});
   await log(tx, { paymentId: payment.id, expenseId, type: "create", after: payment, actor, delta: amount, notes: "Expense payment recorded" });
   const projectedExpense = await projectExpense(tx, expenseId);
-  await parentLog(tx, { expenseId, type: "payment_create", before: expense, after: projectedExpense, actor, amount, notes: `Payment ${payment.id} recorded` });
+  await parentLog(tx, { expenseId, type: "payment_create", before: paymentAuditState(expense), after: paymentAuditState(projectedExpense, payment, origin), actor, amount, notes: origin ? `Initial payment ${payment.id} recorded with expense creation` : `Payment ${payment.id} recorded` });
   return { payment, expense: projectedExpense };
 });
 
@@ -121,7 +140,7 @@ export const updateExpensePayment = (paymentId: string, input: Partial<ExpensePa
   const delta = money(amount - current.amount);
   await log(tx, { paymentId, expenseId: current.expenseId, type: "update", before: current, after: updated, actor, delta, notes: "Expense payment updated" });
   const projectedExpense = await projectExpense(tx, current.expenseId);
-  await parentLog(tx, { expenseId: current.expenseId, type: "payment_update", before: parent, after: projectedExpense, actor, amount: delta, notes: `Payment ${paymentId} updated` });
+  await parentLog(tx, { expenseId: current.expenseId, type: "payment_update", before: paymentAuditState(parent, current), after: paymentAuditState(projectedExpense, updated), actor, amount: delta, notes: `Payment ${paymentId} updated` });
   return { payment: updated, expense: projectedExpense };
 });
 
@@ -136,7 +155,7 @@ export const deleteExpensePayment = (paymentId: string, actor: ExpensePaymentAct
   const updated = await tx.expensePayment.update({ where: { id: paymentId }, data: { deleted: true, deletedAt: new Date(), deletedBy: actor.id, deletedByName: actor.name || null, deletedByRole: actor.role || null } });
   await log(tx, { paymentId, expenseId: current.expenseId, type: "delete", before: current, after: updated, actor, delta: -money(current.amount), notes: "Expense payment deleted" });
   const projectedExpense = await projectExpense(tx, current.expenseId);
-  await parentLog(tx, { expenseId: current.expenseId, type: "payment_delete", before: parent, after: projectedExpense, actor, amount: -money(current.amount), notes: `Payment ${paymentId} deleted` });
+  await parentLog(tx, { expenseId: current.expenseId, type: "payment_delete", before: paymentAuditState(parent, current), after: paymentAuditState(projectedExpense, updated), actor, amount: -money(current.amount), notes: `Payment ${paymentId} deleted` });
   return { payment: updated, expense: projectedExpense };
 });
 
@@ -149,7 +168,7 @@ export const restoreExpensePayment = (paymentId: string, actor: ExpensePaymentAc
   const updated = await tx.expensePayment.update({ where: { id: paymentId }, data: { deleted: false, deletedAt: null, deletedBy: null, deletedByName: null, deletedByRole: null } });
   await log(tx, { paymentId, expenseId: current.expenseId, type: "restore", before: current, after: updated, actor, delta: money(current.amount), notes: "Expense payment restored" });
   const projectedExpense = await projectExpense(tx, current.expenseId);
-  await parentLog(tx, { expenseId: current.expenseId, type: "payment_restore", before: parent, after: projectedExpense, actor, amount: money(current.amount), notes: `Payment ${paymentId} restored` });
+  await parentLog(tx, { expenseId: current.expenseId, type: "payment_restore", before: paymentAuditState(parent, current), after: paymentAuditState(projectedExpense, updated), actor, amount: money(current.amount), notes: `Payment ${paymentId} restored` });
   return { payment: updated, expense: projectedExpense };
 });
 

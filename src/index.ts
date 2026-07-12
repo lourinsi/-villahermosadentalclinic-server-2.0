@@ -110,10 +110,15 @@ console.log('[ROUTES] All routes registered successfully');
 //   res.send("Hello World")
 // })
 
-// Health check endpoint
-app.get("/api/health", (req: express.Request, res: express.Response) => {
-  res.json({ status: "Server is running", timestamp: new Date() });
-});
+// Lightweight, unauthenticated readiness endpoint. Keep the API-prefixed path
+// as a compatibility alias for existing deployment checks and clients.
+const healthCheck = (_req: express.Request, res: express.Response): void => {
+  res.setHeader("Cache-Control", "no-store");
+  res.status(204).end();
+};
+
+app.get("/health", healthCheck);
+app.get("/api/health", healthCheck);
 
 // 404 handler
 app.use((req: express.Request, res: express.Response) => {

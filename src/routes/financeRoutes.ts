@@ -11,7 +11,7 @@ import {
   createDetailedExpense,
   updateDetailedExpense,
   deleteDetailedExpense,
-  payDetailedExpense,
+  restoreDetailedExpense,
   getFinanceHistoryLogs,
   getRecurringExpenses,
   getPayroll,
@@ -23,6 +23,10 @@ import {
   getRecentTransactions,
 } from "../controllers/financeController";
 import { requireAuth } from "../middleware/authMiddleware";
+import {
+  createExpensePaymentHandler, deleteExpensePaymentHandler, getExpensePayment,
+  listExpensePayments, restoreExpensePaymentHandler, updateExpensePaymentHandler,
+} from "../controllers/expensePaymentController";
 
 const router = Router();
 
@@ -47,6 +51,13 @@ router.get("/history/:entityType/:entityId", getFinanceHistoryLogs);
 
 // GET - Get detailed expenses - MORE SPECIFIC ROUTE FIRST
 router.get("/detailed-expenses", getDetailedExpenses);
+router.get("/detailed-expenses/:expenseId/payments", listExpensePayments);
+router.post("/detailed-expenses/:expenseId/payments", createExpensePaymentHandler);
+router.get("/expense-payments/:paymentId", getExpensePayment);
+router.put("/expense-payments/:paymentId", updateExpensePaymentHandler);
+router.patch("/expense-payments/:paymentId", updateExpensePaymentHandler);
+router.delete("/expense-payments/:paymentId", deleteExpensePaymentHandler);
+router.post("/expense-payments/:paymentId/restore", restoreExpensePaymentHandler);
 
 // POST - Add new detailed expense
 router.post("/detailed-expenses", createDetailedExpense);
@@ -58,7 +69,11 @@ router.put("/detailed-expenses/:id", updateDetailedExpense);
 router.patch("/detailed-expenses/:id", updateDetailedExpense);
 
 // POST - Mark a detailed expense paid
-router.post("/detailed-expenses/:id/pay", payDetailedExpense);
+// Backward-compatible alias; it creates an individual payment record.
+router.post("/detailed-expenses/:expenseId/pay", createExpensePaymentHandler);
+
+// POST - Restore soft-deleted detailed expense and reapply linked stock if needed
+router.post("/detailed-expenses/:id/restore", restoreDetailedExpense);
 
 // DELETE - Soft delete detailed expense and reverse linked stock if needed
 router.delete("/detailed-expenses/:id", deleteDetailedExpense);

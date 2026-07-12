@@ -31,7 +31,10 @@ export interface DetailedExpense {
   date: string;
   category: string;
   description: string;
+  price?: number;
   amount: number;
+  totalPaid?: number;
+  balance?: number;
   vendor: string;
   paymentMethod: string;
   paymentDate?: string;
@@ -43,6 +46,26 @@ export interface DetailedExpense {
   deletedAt?: string | Date | null;
   inventoryItemId?: string;
   inventoryQuantity?: number;
+  paymentCount?: number;
+}
+
+export interface ExpensePayment {
+  id: string;
+  expenseId: string;
+  amount: number;
+  method: string;
+  paymentDate: string;
+  transactionId?: string | null;
+  notes?: string | null;
+  idempotencyKey?: string | null;
+  recordedBy: string;
+  recordedByName?: string | null;
+  recordedByRole?: string | null;
+  expenseSnapshot?: unknown;
+  createdAt?: string | Date;
+  updatedAt?: string | Date;
+  deleted?: boolean;
+  deletedAt?: string | Date | null;
 }
 
 export interface RecurringExpense {
@@ -89,6 +112,8 @@ export interface RecentTransaction {
   transactionId?: string;
   paymentId?: string;
   paymentRecordId?: string;
+  expenseId?: string;
+  expensePaymentId?: string;
   notes?: string;
   previousBalance?: number | null;
   newBalance?: number | null;

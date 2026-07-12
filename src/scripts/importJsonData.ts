@@ -364,12 +364,17 @@ const main = async () => {
 
   await importRows("detailed_expenses", readArray("detailed_expenses.json"), async (expense, index) => {
     const id = requiredText(expense.id, `detailed_expense_import_${index}`);
+    const legacyPaid = toNumber(expense.totalPaid) ?? (["paid", "partial", "overpaid"].includes(String(text(expense.status) || "").toLowerCase()) ? toNumber(expense.amount) ?? 0 : 0);
+    const price = toNumber(expense.price) ?? toNumber(expense.amount) ?? 0;
     const data = {
       id,
       date: requiredText(expense.date, ""),
       category: requiredText(expense.category, ""),
       description: requiredText(expense.description, ""),
-      amount: toNumber(expense.amount) ?? 0,
+      price,
+      amount: legacyPaid,
+      totalPaid: legacyPaid,
+      balance: price - legacyPaid,
       vendor: text(expense.vendor),
       paymentMethod: text(expense.paymentMethod),
       status: text(expense.status),
@@ -381,6 +386,29 @@ const main = async () => {
       create: data as any,
       update: data as any,
     });
+    if (legacyPaid > 0) {
+      await prisma.expensePayment.upsert({
+        where: { id: `legacy_expense_payment_${id}` },
+        create: {
+          id: `legacy_expense_payment_${id}`,
+          expenseId: id,
+          amount: legacyPaid,
+          method: text(expense.paymentMethod) || "Legacy payment",
+          paymentDate: text(expense.paymentDate) || requiredText(expense.date, ""),
+          notes: "Carried forward by JSON import.",
+          idempotencyKey: `legacy-expense-${id}`,
+          recordedBy: "system",
+          recordedByName: "JSON import",
+          recordedByRole: "system",
+          expenseSnapshot: expense as any,
+        },
+        update: {
+          amount: legacyPaid,
+          method: text(expense.paymentMethod) || "Legacy payment",
+          paymentDate: text(expense.paymentDate) || requiredText(expense.date, ""),
+        },
+      });
+    }
   });
 
   await importRows("staff_financial_records", readArray("staff_financial_records.json"), async (record, index) => {

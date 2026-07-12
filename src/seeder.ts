@@ -204,6 +204,8 @@ const resetSeedData = async () => {
   });
   await prisma.staffAttendance.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
   await prisma.inventoryItem.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
+  await prisma.expensePaymentLog.deleteMany({ where: { expenseId: { startsWith: SEED_PREFIX } } });
+  await prisma.expensePayment.deleteMany({ where: { expenseId: { startsWith: SEED_PREFIX } } });
   await prisma.detailedExpense.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
   await prisma.paymentMethod.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
   await prisma.staff.deleteMany({ where: { id: { startsWith: SEED_PREFIX } } });
@@ -1228,7 +1230,10 @@ async function buildSeedData() {
       date: dateFromToday(-12),
       category: "Supplies",
       description: "Nitrile gloves and masks",
+      price: 4200,
       amount: 4200,
+      totalPaid: 4200,
+      balance: 0,
       vendor: "Leyte Dental Depot",
       paymentMethod: "Bank Transfer",
       paymentDate: dateFromToday(-12),
@@ -1241,7 +1246,10 @@ async function buildSeedData() {
       date: dateFromToday(-20),
       category: "Rent",
       description: "Clinic rent",
+      price: 35000,
       amount: 35000,
+      totalPaid: 35000,
+      balance: 0,
       vendor: "Villahermosa Commercial Center",
       paymentMethod: "Bank Transfer",
       paymentDate: dateFromToday(-20),
@@ -1254,7 +1262,10 @@ async function buildSeedData() {
       date: dateFromToday(-3),
       category: "Laboratory",
       description: "Crown prep lab fee",
+      price: 3200,
       amount: 3200,
+      totalPaid: 3200,
+      balance: 0,
       vendor: "Ormoc Dental Lab",
       paymentMethod: "Cash",
       paymentDate: dateFromToday(-3),
@@ -1727,6 +1738,8 @@ const deleteStandaloneFinanceSeed = async (data: SeedData) => {
       ],
     },
   });
+  await prisma.expensePaymentLog.deleteMany({ where: { expenseId: { startsWith: `${SEED_PREFIX}expense_` } } });
+  await prisma.expensePayment.deleteMany({ where: { expenseId: { startsWith: `${SEED_PREFIX}expense_` } } });
   await prisma.detailedExpense.deleteMany({
     where: { id: { startsWith: `${SEED_PREFIX}expense_` } },
   });
@@ -1799,6 +1812,22 @@ const createStandaloneFinanceSeed = async (data: SeedData) => {
   console.log("Creating standalone finance records, expenses, and expense logs...");
   await createRecords(prisma.financeRecord, standaloneFinanceRecords(data));
   await createRecords(prisma.detailedExpense, data.detailedExpenses);
+  await createRecords(prisma.expensePayment, data.detailedExpenses.map((expense: any, index: number) => ({
+    id: `${SEED_PREFIX}expense_payment_${index + 1}`,
+    expenseId: expense.id,
+    amount: expense.totalPaid ?? expense.amount,
+    method: expense.paymentMethod || "cash",
+    paymentDate: expense.paymentDate || expense.date,
+    transactionId: `${SEED_PREFIX.toUpperCase()}EXP-${index + 1}`,
+    notes: "Seed expense payment.",
+    idempotencyKey: `${SEED_PREFIX}expense-payment-${index + 1}`,
+    recordedBy: financeSeedActor.changedBy,
+    recordedByName: financeSeedActor.changedByName,
+    recordedByRole: financeSeedActor.changedByRole,
+    expenseSnapshot: expenseSnapshot(expense),
+    createdAt: expense.createdAt,
+    updatedAt: expense.createdAt,
+  })));
   await createRecords(prisma.expenseLog, data.expenseLogs);
 };
 

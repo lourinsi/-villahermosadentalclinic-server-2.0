@@ -124,7 +124,9 @@ export const findFinanceHistoryLogs = async (client: any, input: FindFinanceHist
     const logs = await client.expenseLog.findMany({
       where: input.entityId ? { expenseId: input.entityId } : undefined,
       orderBy: { changedAt: "desc" },
-      take,
+      // An entity-specific expense request powers version navigation and must be complete.
+      // Keep the cap only for broad, cross-expense history queries.
+      ...(input.entityId ? {} : { take }),
     });
     return logs.map((log: any) => normalizeLog("expense", log));
   }

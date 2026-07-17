@@ -20,8 +20,6 @@ export interface Appointment {
   treatments?: Array<{
     type: number;
     customType?: string;
-    treatmentNotes?: string;
-    toothNumbers?: string;
   }>;
   serviceType?: string;
   // Status is flexible to accept any value from the JSON configuration

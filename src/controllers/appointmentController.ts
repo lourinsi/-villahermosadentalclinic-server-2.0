@@ -112,8 +112,6 @@ const normalizeAppointmentTreatments = (value: unknown): any[] | undefined => {
         return {
           type: Number(section.type) || 0,
           customType: String(section.customType ?? section.custom_type ?? "").trim() || undefined,
-          treatmentNotes: String(section.treatmentNotes ?? section.treatment_notes ?? "").trim() || undefined,
-          toothNumbers: normalizeAppointmentToothNumbers(section.toothNumbers ?? section.tooth_numbers),
         };
       })
       .filter((item) => item !== null);

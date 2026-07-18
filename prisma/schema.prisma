@@ -90,6 +90,7 @@ model Appointment {
   notes              String?
   treatmentNotes     String?
   toothNumbers       String?
+  treatments         Json?
   serviceType        String?
   status             String?
   cancellationReason String?

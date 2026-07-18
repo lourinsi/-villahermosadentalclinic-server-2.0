@@ -102,6 +102,33 @@ const normalizeAppointmentToothNumbers = (value: unknown): string => {
     .join(", ");
 };
 
+const normalizeAppointmentTreatments = (value: unknown): any[] | undefined => {
+  if (value === undefined || value === null) return undefined;
+  if (Array.isArray(value)) {
+    return value
+      .map((treatment) => {
+        if (!treatment || typeof treatment !== "object") return null;
+        const section = treatment as Record<string, unknown>;
+        return {
+          type: Number(section.type) || 0,
+          customType: String(section.customType ?? section.custom_type ?? "").trim() || undefined,
+        };
+      })
+      .filter((item) => item !== null);
+  }
+
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    if (Array.isArray(parsed)) {
+      return normalizeAppointmentTreatments(parsed);
+    }
+  } catch {
+    // ignore invalid JSON
+  }
+
+  return undefined;
+};
+
 const getActiveDoctorStaff = async (): Promise<DoctorIdentity[]> =>
   prisma.staff.findMany({
     where: { deleted: false },
@@ -351,6 +378,7 @@ const appointmentData = (appointment: Appointment, previousState?: Appointment) 
   cancellationReason: appointment.cancellationReason,
   treatmentNotes: appointment.treatmentNotes,
   toothNumbers: appointment.toothNumbers,
+  treatments: appointment.treatments,
   previousState,
   newState: appointment,
 });
@@ -441,6 +469,7 @@ const buildAppointmentCreateData = (appointment: Appointment) => {
     notes: appointment.notes || "",
     treatmentNotes: appointment.treatmentNotes || "",
     toothNumbers: normalizeAppointmentToothNumbers(appointment.toothNumbers),
+    treatments: normalizeAppointmentTreatments(appointment.treatments),
     serviceType: appointment.serviceType || null,
     status,
     cancellationReason: appointment.cancellationReason || null,
@@ -471,6 +500,7 @@ const buildAppointmentUpdateData = (updates: Partial<Appointment>) => {
     "notes",
     "treatmentNotes",
     "toothNumbers",
+    "treatments",
     "serviceType",
     "status",
     "cancellationReason",
@@ -494,6 +524,9 @@ const buildAppointmentUpdateData = (updates: Partial<Appointment>) => {
   }
   if (Object.prototype.hasOwnProperty.call(data, "toothNumbers")) {
     data.toothNumbers = normalizeAppointmentToothNumbers(data.toothNumbers);
+  }
+  if (Object.prototype.hasOwnProperty.call(data, "treatments")) {
+    data.treatments = normalizeAppointmentTreatments(data.treatments);
   }
   data.updatedAt = new Date();
   return data;
@@ -1316,6 +1349,7 @@ export const updateAppointment = async (
     else if (updates.notes !== undefined && updates.notes !== oldAppointment.notes) logChangeType = "notes_update";
     else if ((updates as any).treatmentNotes !== undefined && (updates as any).treatmentNotes !== (oldAppointment as any).treatmentNotes) logChangeType = "notes_update";
     else if ((updates as any).toothNumbers !== undefined && (updates as any).toothNumbers !== (oldAppointment as any).toothNumbers) logChangeType = "notes_update";
+    else if ((updates as any).treatments !== undefined && JSON.stringify((updates as any).treatments) !== JSON.stringify((oldAppointment as any).treatments)) logChangeType = "notes_update";
     else if (updates.paymentStatus && updates.paymentStatus !== oldPaymentStatus) logChangeType = "payment";
 
     if (paymentAmount > 0 || (updates.paymentStatus && updates.paymentStatus !== oldPaymentStatus)) {
@@ -1666,6 +1700,7 @@ export const bookPublicAppointment = async (
       notes: notes || "",
       treatmentNotes: req.body.treatmentNotes || "",
       toothNumbers: normalizeAppointmentToothNumbers(toothNumbers ?? req.body.tooth_numbers),
+      treatments: normalizeAppointmentTreatments(req.body.treatments ?? req.body.treatments),
       serviceType: serviceType || "",
       status: requestedStatus,
       cancellationReason: null,

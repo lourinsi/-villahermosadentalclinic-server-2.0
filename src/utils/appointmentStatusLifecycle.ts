@@ -71,13 +71,33 @@ export const isPastAppointmentDate = (
 export const getPastRestrictedAppointmentStatus = (
   dateValue?: string,
   status?: string,
-  now: Date = new Date()
+  now: Date = new Date(),
+  paymentStatus?: string
 ): string => {
-  if (!isPastAppointmentDate(dateValue, now)) return normalizeStatus(status || "scheduled");
-
   const normalizedStatus = normalizeStatus(status);
+  if (FINAL_STATUSES.has(normalizedStatus)) {
+    return normalizedStatus;
+  }
+
+  const isPast = isPastAppointmentDate(dateValue, now);
+
+  if (!isPast) {
+    if (normalizedStatus === "tbd" || normalizedStatus === "overdue") {
+      return "scheduled";
+    }
+    return normalizedStatus || "scheduled";
+  }
+
+  const normPayment = String(paymentStatus || "").toLowerCase().trim();
+  const isFullyPaid = normPayment === "paid" || normPayment === "over-paid" || normPayment === "fully-paid";
+
+  if (isFullyPaid && (normalizedStatus === "overdue" || normalizedStatus === "tbd")) {
+    return TBD_STATUS;
+  }
+
   return PAST_APPOINTMENT_STATUSES.has(normalizedStatus) ? normalizedStatus : TBD_STATUS;
 };
+
 
 const shouldMarkAppointmentAsTbd = (appointment: Appointment, now: Date): boolean => {
   if (appointment.deleted) return false;

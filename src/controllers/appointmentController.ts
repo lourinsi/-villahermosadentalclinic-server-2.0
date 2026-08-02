@@ -450,7 +450,9 @@ const buildAppointmentCreateData = (appointment: Appointment) => {
   const price = appointment.price ?? basePrice;
   const status = getPastRestrictedAppointmentStatus(
     appointment.date,
-    appointment.status || "scheduled"
+    appointment.status || "scheduled",
+    new Date(),
+    appointment.paymentStatus
   );
 
   return {
@@ -697,7 +699,9 @@ export const addAppointment = async (
 
     const requestedStatus = getPastRestrictedAppointmentStatus(
       appointmentInput.date,
-      appointmentInput.status || "scheduled"
+      appointmentInput.status || "scheduled",
+      new Date(),
+      appointmentInput.paymentStatus
     );
 
     if (!isSeeding && isStaffRole(req) && isPatientCartStatus(requestedStatus)) {
@@ -1266,7 +1270,9 @@ export const updateAppointment = async (
     if (!oldWasSoftDeleted) {
       const restrictedStatus = getPastRestrictedAppointmentStatus(
         updatedAppointment.date,
-        updatedAppointment.status
+        updatedAppointment.status,
+        new Date(),
+        updatedAppointment.paymentStatus
       );
       if (restrictedStatus !== updatedAppointment.status) {
         updatedAppointment.status = restrictedStatus;
@@ -1338,6 +1344,17 @@ export const updateAppointment = async (
       const discount = (updatedAppointment as any).discount || 0;
       updatedAppointment.balance = Math.max(0, price - discount - (updatedAppointment.totalPaid || 0));
       updates.balance = updatedAppointment.balance;
+
+      const restrictedStatus = getPastRestrictedAppointmentStatus(
+        updatedAppointment.date,
+        updatedAppointment.status,
+        new Date(),
+        updatedAppointment.paymentStatus
+      );
+      if (restrictedStatus !== updatedAppointment.status) {
+        updatedAppointment.status = restrictedStatus;
+        updates.status = restrictedStatus;
+      }
     }
 
     const changedBy = (req as any).user?.id || (req as any).user?.username || "admin";

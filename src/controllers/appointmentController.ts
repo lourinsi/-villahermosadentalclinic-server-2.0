@@ -974,14 +974,32 @@ export const getAppointments = async (
       );
     }
     if (status && status !== "all") {
-      filtered = filtered.filter(
-        (appointment) =>
-          (includeUnpaid === "true" &&
-            (appointment.paymentStatus === "unpaid" ||
-              isPatientCartStatus(appointment.status) ||
-              normalizeStatus(appointment.status) === "tbd")) ||
-          normalizeStatus(appointment.status) === normalizeStatus(status)
-      );
+      const requestedStatuses = status
+        .split(",")
+        .map((value) => normalizeStatus(value))
+        .filter(Boolean);
+
+      if (requestedStatuses.length > 0) {
+        filtered = filtered.filter((appointment) => {
+          const appointmentStatus = normalizeStatus(appointment.status);
+          return requestedStatuses.some((requestedStatus) =>
+            appointmentStatus === requestedStatus ||
+            (includeUnpaid === "true" &&
+              requestedStatus === "tbd" &&
+              (appointment.paymentStatus === "unpaid" ||
+                isPatientCartStatus(appointment.status)))
+          );
+        });
+      }
+    }
+
+    if (req.query.paymentStatus && String(req.query.paymentStatus).trim() !== "all") {
+      const requestedPaymentStatus = normalizePaymentStatusValue(req.query.paymentStatus);
+      if (requestedPaymentStatus) {
+        filtered = filtered.filter((appointment) =>
+          normalizePaymentStatusValue(appointment.paymentStatus) === requestedPaymentStatus
+        );
+      }
     }
 
     if (isGlobal) {

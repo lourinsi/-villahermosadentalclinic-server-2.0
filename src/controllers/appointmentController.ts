@@ -450,7 +450,9 @@ const buildAppointmentCreateData = (appointment: Appointment) => {
   const price = appointment.price ?? basePrice;
   const status = getPastRestrictedAppointmentStatus(
     appointment.date,
-    appointment.status || "scheduled"
+    appointment.status || "scheduled",
+    new Date(),
+    appointment.paymentStatus
   );
 
   return {
@@ -697,7 +699,9 @@ export const addAppointment = async (
 
     const requestedStatus = getPastRestrictedAppointmentStatus(
       appointmentInput.date,
-      appointmentInput.status || "scheduled"
+      appointmentInput.status || "scheduled",
+      new Date(),
+      appointmentInput.paymentStatus
     );
 
     if (!isSeeding && isStaffRole(req) && isPatientCartStatus(requestedStatus)) {
@@ -974,14 +978,32 @@ export const getAppointments = async (
       );
     }
     if (status && status !== "all") {
-      filtered = filtered.filter(
-        (appointment) =>
-          (includeUnpaid === "true" &&
-            (appointment.paymentStatus === "unpaid" ||
-              isPatientCartStatus(appointment.status) ||
-              normalizeStatus(appointment.status) === "tbd")) ||
-          normalizeStatus(appointment.status) === normalizeStatus(status)
-      );
+      const requestedStatuses = status
+        .split(",")
+        .map((value) => normalizeStatus(value))
+        .filter(Boolean);
+
+      if (requestedStatuses.length > 0) {
+        filtered = filtered.filter((appointment) => {
+          const appointmentStatus = normalizeStatus(appointment.status);
+          return requestedStatuses.some((requestedStatus) =>
+            appointmentStatus === requestedStatus ||
+            (includeUnpaid === "true" &&
+              requestedStatus === "tbd" &&
+              (appointment.paymentStatus === "unpaid" ||
+                isPatientCartStatus(appointment.status)))
+          );
+        });
+      }
+    }
+
+    if (req.query.paymentStatus && String(req.query.paymentStatus).trim() !== "all") {
+      const requestedPaymentStatus = normalizePaymentStatusValue(req.query.paymentStatus);
+      if (requestedPaymentStatus) {
+        filtered = filtered.filter((appointment) =>
+          normalizePaymentStatusValue(appointment.paymentStatus) === requestedPaymentStatus
+        );
+      }
     }
 
     if (isGlobal) {
@@ -1248,7 +1270,9 @@ export const updateAppointment = async (
     if (!oldWasSoftDeleted) {
       const restrictedStatus = getPastRestrictedAppointmentStatus(
         updatedAppointment.date,
-        updatedAppointment.status
+        updatedAppointment.status,
+        new Date(),
+        updatedAppointment.paymentStatus
       );
       if (restrictedStatus !== updatedAppointment.status) {
         updatedAppointment.status = restrictedStatus;
@@ -1320,6 +1344,17 @@ export const updateAppointment = async (
       const discount = (updatedAppointment as any).discount || 0;
       updatedAppointment.balance = Math.max(0, price - discount - (updatedAppointment.totalPaid || 0));
       updates.balance = updatedAppointment.balance;
+
+      const restrictedStatus = getPastRestrictedAppointmentStatus(
+        updatedAppointment.date,
+        updatedAppointment.status,
+        new Date(),
+        updatedAppointment.paymentStatus
+      );
+      if (restrictedStatus !== updatedAppointment.status) {
+        updatedAppointment.status = restrictedStatus;
+        updates.status = restrictedStatus;
+      }
     }
 
     const changedBy = (req as any).user?.id || (req as any).user?.username || "admin";

@@ -55,6 +55,7 @@ export interface Patient {
   companyAddress?: string | null;
   height?: string | null;
   weight?: string | null;
+  patientSince?: Date | string;
   createdAt?: Date;
   updatedAt?: Date;
   deleted?: boolean;

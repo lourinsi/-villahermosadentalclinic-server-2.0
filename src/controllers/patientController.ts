@@ -28,6 +28,7 @@ const patientUpdateFields = [
   "allergies",
   "notes",
   "profilePicture",
+  "createdAt",
   "parentId",
   "isPrimary",
   "relationship",
@@ -59,6 +60,7 @@ const patientUpdateFields = [
   "companyAddress",
   "height",
   "weight",
+  "patientSince",
 ] as const;
 
 const stripPassword = <T extends Record<string, any>>(patient: T): Omit<T, "password"> => {
@@ -326,9 +328,21 @@ const buildPatientUpdateData = (input: Record<string, any>) => {
   const data: Record<string, any> = {};
 
   for (const field of patientUpdateFields) {
-    if (Object.prototype.hasOwnProperty.call(input, field)) {
-      data[field] = input[field];
+    if (!Object.prototype.hasOwnProperty.call(input, field)) {
+      continue;
     }
+
+    if (field === "createdAt") {
+      data.createdAt = input.createdAt ? new Date(String(input.createdAt)) : null;
+      continue;
+    }
+
+    if (field === "patientSince") {
+      data.patientSince = input.patientSince ? new Date(String(input.patientSince)) : null;
+      continue;
+    }
+
+    data[field] = input[field];
   }
 
   data.updatedAt = new Date();
@@ -376,6 +390,7 @@ const buildPatientCreateData = (
     dentalCharts: patientData.dentalCharts || [],
     balance: (patientData as any).balance ?? null,
     lastVisit: patientData.lastVisit || null,
+    patientSince: patientData.patientSince ? new Date(String(patientData.patientSince)) : new Date(),
     createdAt: new Date(),
     updatedAt: new Date(),
     deleted: false,

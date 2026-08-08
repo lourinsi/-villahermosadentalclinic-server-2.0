@@ -62,6 +62,7 @@ model Patient {
   companyAddress        String?
   height                String?
   weight                String?
+  patientSince          DateTime?
   createdAt             DateTime?
   updatedAt             DateTime?
   deleted               Boolean   @default(false)

@@ -29,6 +29,7 @@
     "lint": "eslint src",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "ensure:patientSince": "node src/scripts/ensurePatientSince.js",
     "prisma:studio": "prisma studio --browser none",
     "db:push": "prisma db push",
     "db:import-json": "tsx src/scripts/importJsonData.ts",

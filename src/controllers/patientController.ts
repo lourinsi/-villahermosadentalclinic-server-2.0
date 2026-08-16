@@ -601,10 +601,27 @@ export const getPatients = async (
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.max(1, parseInt(limit, 10) || 10);
 
-    let active = (await prisma.patient.findMany({
-      where: { deleted: false },
-      orderBy: { createdAt: "desc" },
-    })) as any[];
+    let active: any[] = [];
+    try {
+      active = (await prisma.patient.findMany({
+        where: { deleted: false },
+        orderBy: { createdAt: "desc" },
+      })) as any[];
+    } catch (err: any) {
+      // Handle known Prisma schema mismatch (missing column) gracefully so
+      // client-side code doesn't enter an infinite restore/retry loop.
+      if (err && err.code === "P2022") {
+        console.error("[GET PATIENTS] Database schema mismatch (P2022):", err?.meta || err);
+        return res.status(200).json({
+          success: false,
+          message:
+            "Server schema mismatch: missing database column required for patient queries. Please contact the administrator.",
+          error: "schema_mismatch",
+        });
+      }
+
+      throw err;
+    }
 
     if (doctor) {
       const appointments = await prisma.appointment.findMany({

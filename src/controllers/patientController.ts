@@ -34,6 +34,7 @@ const patientUpdateFields = [
   "relationship",
   "username",
   "dentalCharts",
+  "versionHistory",
   "balance",
   "lastVisit",
   "gender",

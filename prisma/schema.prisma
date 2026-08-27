@@ -36,6 +36,7 @@ model Patient {
   relationship          String?
   username              String?
   dentalCharts          Json?
+  versionHistory        Json?
   balance               Float?
   lastVisit             String?
   gender                String?

@@ -26,6 +26,7 @@ export interface Patient {
   relationship?: string;
   username?: string; // Optional: for linking to auth user accounts
   dentalCharts?: { date: string; data: string; isEmpty: boolean }[];
+  versionHistory?: any[];
   balance?: number | null;
   status?: "active" | "overdue" | "inactive" | string;
   profileCompletion?: "complete" | "incomplete" | string;
